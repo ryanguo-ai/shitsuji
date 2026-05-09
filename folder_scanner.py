@@ -39,7 +39,17 @@ class FolderScannerApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Folder Scanner")
-        self.geometry("900x600")
+
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        if screen_w > 0 and screen_h > 0:
+            win_w, win_h = screen_w // 2, screen_h // 2
+        else:
+            screen_w, screen_h = 1280, 720
+            win_w, win_h = 640, 360
+        x = (screen_w - win_w) // 2
+        y = (screen_h - win_h) // 2
+        self.geometry(f"{win_w}x{win_h}+{x}+{y}")
         self.minsize(700, 450)
         self.configure(bg="#f5f5f5")
 
@@ -148,7 +158,7 @@ class FolderScannerApp(tk.Tk):
         self.tree.tag_configure("odd", background="#ffffff")
         self.tree.tag_configure("even", background="#ecf0f1")
 
-        self.tree.bind("<Double-1>", self._on_row_double_click)
+        self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
 
         # ── Right: detail panel ───────────────────────────────────────── #
         self._build_detail_panel()
@@ -293,11 +303,11 @@ class FolderScannerApp(tk.Tk):
 
         self._cover_photo = None  # keep reference to avoid GC
 
-    def _on_row_double_click(self, event):
-        item = self.tree.identify_row(event.y)
-        if not item:
+    def _on_row_select(self, event):
+        selected = self.tree.selection()
+        if not selected:
             return
-        values = self.tree.item(item, "values")
+        values = self.tree.item(selected[0], "values")
         if not values:
             return
         full_path, file_type = values[0], values[1]
