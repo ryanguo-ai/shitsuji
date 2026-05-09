@@ -13,7 +13,10 @@ from datetime import datetime
 from mutagen.flac import FLAC
 from PIL import Image, ImageTk
 
-SETTINGS_PATH = pathlib.Path.home() / ".shitsuji" / "settings.json"
+AUDIO_EXTENSIONS = {
+    "FLAC", "MP3", "AAC", "OGG", "OPUS", "WAV", "AIFF", "APE",
+    "WV", "M4A", "WMA", "DSF", "DFF", "MPC",
+}
 DEFAULTS = {
     "foobar_path": r"C:\_soft\foobar2000_2.25.8\foobar2000.exe",
 }
@@ -352,12 +355,37 @@ class FolderScannerApp(tk.Tk):
         if not item:
             return
         self.tree.selection_set(item)
+        values = self.tree.item(item, "values")
+        full_path = values[0]
+        ext = os.path.splitext(full_path)[1].lstrip(".").upper()
+
         menu = tk.Menu(self, tearoff=0)
+
+        if ext in AUDIO_EXTENSIONS:
+            menu.add_command(
+                label="▶  Play in foobar2000",
+                command=lambda: self._play_file(full_path),
+            )
+            menu.add_separator()
+
         menu.add_command(
             label="Copy File Path",
-            command=lambda: self._copy_path(self.tree.item(item, "values")[0]),
+            command=lambda: self._copy_path(full_path),
         )
         menu.tk_popup(event.x_root, event.y_root)
+
+    def _play_file(self, path: str):
+        import subprocess
+        foobar = self._settings.get("foobar_path", "").strip()
+        if not foobar:
+            messagebox.showwarning("foobar2000 not set",
+                                   "Please set the foobar2000 path in Settings.")
+            return
+        if not os.path.isfile(foobar):
+            messagebox.showerror("foobar2000 not found",
+                                 f"Executable not found:\n{foobar}")
+            return
+        subprocess.Popen([foobar, "/play", path])
 
     def _copy_path(self, path: str):
         self.clipboard_clear()
