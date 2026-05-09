@@ -27,6 +27,8 @@ def _load_flac_info(path: str) -> dict:
         "tags": {},
         "cover": None,        # raw bytes of first picture, or None
         "cover_dims": "",
+        "cover_count": 0,
+        "cover_size_kb": "",
     }
     if not path or not os.path.isfile(path):
         return result
@@ -40,8 +42,11 @@ def _load_flac_info(path: str) -> dict:
         if flac.tags:
             for k, vlist in flac.tags.as_dict().items():
                 result["tags"][k.upper()] = vlist[0] if vlist else ""
+        result["cover_count"] = len(flac.pictures)
         for pic in flac.pictures:
             result["cover"] = pic.data
+            kb = len(pic.data) / 1024
+            result["cover_size_kb"] = f"{kb:.1f} KB"
             try:
                 from PIL import Image
                 img = Image.open(io.BytesIO(pic.data))
@@ -109,7 +114,7 @@ class CompareTracksTab(tk.Frame):
                  font=("Segoe UI", 9), fg="#555555", bg="#f5f5f5",
                  wraplength=340, justify="left").pack(anchor="w")
         self._src_cover = tk.Label(left, bg="#d5d8dc", text="No cover art",
-                                   width=20, height=10, relief=tk.GROOVE)
+                                   relief=tk.GROOVE)
         self._src_cover.pack(pady=4, anchor="w")
         self._src_dims_var = tk.StringVar(value="")
         tk.Label(left, textvariable=self._src_dims_var,
@@ -136,7 +141,7 @@ class CompareTracksTab(tk.Frame):
                  font=("Segoe UI", 9), fg="#555555", bg="#f5f5f5",
                  wraplength=340, justify="left").pack(anchor="w")
         self._lib_cover = tk.Label(right, bg="#d5d8dc", text="No cover art",
-                                   width=20, height=10, relief=tk.GROOVE)
+                                   relief=tk.GROOVE)
         self._lib_cover.pack(pady=4, anchor="w")
         self._lib_dims_var = tk.StringVar(value="")
         tk.Label(right, textvariable=self._lib_dims_var,
@@ -230,9 +235,10 @@ class CompareTracksTab(tk.Frame):
             try:
                 from PIL import Image, ImageTk
                 img = Image.open(io.BytesIO(data))
-                img.thumbnail((180, 180))
+                img.thumbnail((240, 240))
                 photo = ImageTk.PhotoImage(img)
-                label.configure(image=photo, text="", bg="#ffffff")
+                label.configure(image=photo, text="", bg="#ffffff",
+                                width=photo.width(), height=photo.height())
                 if is_src:
                     self._src_photo = photo
                 else:
@@ -246,7 +252,8 @@ class CompareTracksTab(tk.Frame):
             self._src_photo = None
         else:
             self._lib_photo = None
-        label.configure(image="", text="No cover art", bg="#d5d8dc")
+        label.configure(image="", text="No cover art", bg="#d5d8dc",
+                        width=20, height=5)
         dims_var.set("")
 
     def _populate_table(self, src: dict, lib: dict):
@@ -265,9 +272,11 @@ class CompareTracksTab(tk.Frame):
         # ── Technical ── #
         _add_header("Technical")
         technical = [
-            ("Bitrate",    src["bitrate"],              lib["bitrate"]),
-            ("Duration",   src["duration"],             lib["duration"]),
-            ("Cover art",  src["cover_dims"] or "None", lib["cover_dims"] or "None"),
+            ("Bitrate",      src["bitrate"],                          lib["bitrate"]),
+            ("Duration",     src["duration"],                         lib["duration"]),
+            ("Image count",  str(src["cover_count"]),                 str(lib["cover_count"])),
+            ("Cover art",    src["cover_dims"] or "None",             lib["cover_dims"] or "None"),
+            ("Cover size",   src["cover_size_kb"] or "None",          lib["cover_size_kb"] or "None"),
         ]
         for i, (prop, sv, lv) in enumerate(technical):
             _add_row(prop, sv, lv, i)
