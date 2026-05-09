@@ -20,6 +20,7 @@ A personal music library manager built with Python / Tkinter.
 |---|---|
 | `~/.shitsuji/settings.json` | User preferences (foobar path, music lib paths, window geometry, …) |
 | `~/.shitsuji/inventory.db` | SQLite music inventory database |
+| `~/.shitsuji/shitsuji.log` | Application log (tab-separated: `time`, `level`, `operation`, `message`) |
 
 ---
 

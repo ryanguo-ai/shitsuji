@@ -11,7 +11,8 @@ from mutagen.flac import FLAC
 from tkinterdnd2 import DND_FILES
 
 from panels.audio_details_panel import AudioDetailsPanel
-from panels.settings_panel import load_settings, save_settings
+from panels.settings_panel import load_settings, save_settings, MUSIC_LIB_PARTITIONS
+from panels.logger import get_logger
 
 AUDIO_EXTENSIONS = {
     "FLAC", "MP3", "AAC", "OGG", "OPUS", "WAV", "AIFF", "APE",
@@ -152,6 +153,7 @@ class ScanTab(tk.Frame):
 
         self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
         self.tree.bind("<Button-3>", self._on_row_right_click)
+        self.tree.bind("<Delete>", self._on_delete_key)
 
         self.tree.drop_target_register(DND_FILES)
         self.tree.dnd_bind("<<Drop>>", self._on_drop)
@@ -274,7 +276,24 @@ class ScanTab(tk.Frame):
         filenames = [e.name for e in entries if e.is_file(follow_symlinks=False)]
         yield folder, dirnames, filenames
 
+    def _on_delete_key(self, _event=None):
+        selected = self.tree.selection()
+        if not selected:
+            return
+        for item in selected:
+            self.tree.delete(item)
+        # Re-stripe remaining rows
+        for i, item in enumerate(self.tree.get_children()):
+            self.tree.item(item, tags=("odd" if i % 2 else "even",))
+        total = len(self.tree.get_children())
+        self.footer_var.set(f"{total} file{'s' if total != 1 else ''} in list.")
+        self.status_var.set(
+            f"Removed {len(selected)} row{'s' if len(selected) != 1 else ''}. "
+            f"{total} remaining."
+        )
+
     def _on_drop(self, event):
+        log = get_logger("scan_drop")
         paths = self.tk.splitlist(event.data)
         added = 0
         for path in paths:
@@ -290,6 +309,7 @@ class ScanTab(tk.Frame):
                         added += 1
 
         total = len(self.tree.get_children())
+        log.info(f"Dropped {added} file(s), {total} total in list")
         self.status_var.set(
             f"Added {added} file{'s' if added != 1 else ''} — {total} total."
         )
@@ -335,6 +355,16 @@ class ScanTab(tk.Frame):
         if audio_paths or flac_paths:
             menu.add_separator()
 
+        # ── Send to Lib submenu ── #
+        lib_menu = tk.Menu(menu, tearoff=0)
+        for partition in MUSIC_LIB_PARTITIONS:
+            lib_menu.add_command(
+                label=partition,
+                command=lambda p=partition: self._send_to_lib(paths, p),
+            )
+        menu.add_cascade(label="📂  Send to Lib ▶", menu=lib_menu)
+        menu.add_separator()
+
         menu.add_command(
             label=f"Copy Path{'s' if len(paths) > 1 else ''}",
             command=lambda: self._copy_paths(paths),
@@ -361,6 +391,53 @@ class ScanTab(tk.Frame):
     def _copy_paths(self, paths: list[str]):
         self.clipboard_clear()
         self.clipboard_append("\n".join(paths))
+
+    def _send_to_lib(self, paths: list[str], partition: str):
+        from panels.database import upsert_track_info
+        from mutagen.flac import FLAC as _FLAC
+
+        log = get_logger("send_to_lib")
+        lib_root = self._settings.get("music_lib_paths", {}).get(partition, "")
+        errors: list[str] = []
+        saved = 0
+
+        for abs_path in paths:
+            norm_abs  = os.path.normcase(abs_path)
+            norm_root = os.path.normcase(lib_root).rstrip(os.sep) + os.sep if lib_root else ""
+            if norm_root and norm_abs.startswith(norm_root):
+                rel_path = abs_path[len(norm_root):]
+            else:
+                rel_path = os.path.basename(abs_path)
+
+            artist = title = album = bitrate = ""
+            try:
+                f = _FLAC(abs_path)
+                artist  = (f.get("artist")  or f.get("ARTIST")  or [""])[0]
+                title   = (f.get("title")   or f.get("TITLE")   or [""])[0]
+                album   = (f.get("album")   or f.get("ALBUM")   or [""])[0]
+                bitrate = f"{round(f.info.bitrate / 1000)} kbps" if f.info else ""
+            except Exception as exc:
+                log.warning(f"Tag read failed: {abs_path} — {exc}")
+
+            try:
+                upsert_track_info(partition, rel_path, artist, title, album, bitrate)
+                log.info(f"Saved to {partition}: {rel_path}")
+                saved += 1
+            except Exception as exc:
+                log.error(f"DB write failed: {abs_path} — {exc}")
+                errors.append(f"{os.path.basename(abs_path)}: {exc}")
+
+        if errors:
+            log.warning(f"Send to lib finished with {len(errors)} error(s): partition={partition}")
+            messagebox.showerror(
+                "Send to Lib — errors",
+                f"{saved} saved, {len(errors)} failed:\n\n" + "\n".join(errors[:8]),
+            )
+        else:
+            log.info(f"Send to lib complete: {saved} file(s) → {partition}")
+            self.status_var.set(
+                f"✔  Sent {saved} file{'s' if saved != 1 else ''} → {partition}"
+            )
 
     def _on_row_select(self, event):
         selected = self.tree.selection()

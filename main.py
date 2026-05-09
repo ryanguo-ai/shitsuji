@@ -10,6 +10,9 @@ from panels.folder_scanner import ScanTab
 from panels.search_panel import SearchTab
 from panels.settings_panel import SettingsDialog, load_settings, save_settings
 from panels.database import init_db
+from panels.logger import get_logger
+
+_log = get_logger("startup")
 
 
 class App(TkinterDnD.Tk):
@@ -17,6 +20,7 @@ class App(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
         init_db()
+        _log.info("Application started")
         self._settings = load_settings()
         self.title("Shitsuji")
         self.minsize(700, 450)
@@ -85,6 +89,7 @@ class App(TkinterDnD.Tk):
     def _on_close(self):
         self._settings["window_geometry"] = self.geometry()
         save_settings(self._settings)
+        _log.info("Application closed")
         self.destroy()
 
     # ------------------------------------------------------------------ #
