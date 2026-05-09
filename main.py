@@ -4,6 +4,7 @@ Entry point — builds the tabbed application window and starts the event loop.
 
 import tkinter as tk
 from tkinter import ttk
+from tkinterdnd2 import TkinterDnD
 
 from panels.folder_scanner import ScanTab
 from panels.search_panel import SearchTab
@@ -11,7 +12,7 @@ from panels.settings_panel import SettingsDialog, load_settings, save_settings
 from panels.database import init_db
 
 
-class App(tk.Tk):
+class App(TkinterDnD.Tk):
 
     def __init__(self):
         super().__init__()

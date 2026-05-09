@@ -8,6 +8,7 @@ from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
 
 from mutagen.flac import FLAC
+from tkinterdnd2 import DND_FILES
 
 from panels.audio_details_panel import AudioDetailsPanel
 from panels.settings_panel import load_settings, save_settings
@@ -152,6 +153,9 @@ class ScanTab(tk.Frame):
         self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
         self.tree.bind("<Button-3>", self._on_row_right_click)
 
+        self.tree.drop_target_register(DND_FILES)
+        self.tree.dnd_bind("<<Drop>>", self._on_drop)
+
         # ── Right: detail panel ───────────────────────────────────────── #
         self._detail_panel = AudioDetailsPanel(self._paned)
         self._paned.add(self._detail_panel, stretch="never", minsize=240)
@@ -213,15 +217,13 @@ class ScanTab(tk.Frame):
 
         recursive = self.recursive_var.get()
         show_hidden = self.show_hidden_var.get()
-        file_count = [0]
-        row_index = [0]
 
         try:
-            self._populate_list(folder, show_hidden, recursive, file_count, row_index)
+            self._populate_list(folder, show_hidden, recursive)
         except PermissionError as exc:
             messagebox.showerror("Permission denied", str(exc))
 
-        total = file_count[0]
+        total = len(self.tree.get_children())
         self.status_var.set(f"Found {total} file{'s' if total != 1 else ''}  in  {folder}")
         self.footer_var.set(f"Scan complete — {total} file{'s' if total != 1 else ''} found.")
 
@@ -229,7 +231,7 @@ class ScanTab(tk.Frame):
     # List population                                                      #
     # ------------------------------------------------------------------ #
 
-    def _populate_list(self, folder, show_hidden, recursive, file_count, row_index):
+    def _populate_list(self, folder, show_hidden, recursive):
         """Walk the folder and insert every file as a flat row."""
         walker = os.walk(folder) if recursive else self._single_level(folder)
 
@@ -239,29 +241,27 @@ class ScanTab(tk.Frame):
                 filenames = [f for f in filenames if not f.startswith(".")]
 
             for name in sorted(filenames, key=str.lower):
-                full_path = os.path.join(dirpath, name)
-                try:
-                    stat = os.stat(full_path)
-                    size = format_size(stat.st_size)
-                    modified = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
-                except OSError:
-                    size = "—"
-                    modified = "—"
+                self._append_file(os.path.join(dirpath, name))
 
-                ext = os.path.splitext(name)[1].lstrip(".").upper()
-                file_type = ext if ext else "File"
+    def _append_file(self, full_path: str):
+        """Insert a single file row at the end of the tree."""
+        try:
+            stat = os.stat(full_path)
+            size     = format_size(stat.st_size)
+            modified = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+        except OSError:
+            size = modified = "—"
 
-                artist, title, bitrate = _read_flac_tags(full_path) if ext == "FLAC" else ("", "", "")
+        ext       = os.path.splitext(full_path)[1].lstrip(".").upper()
+        file_type = ext if ext else "File"
+        artist, title, bitrate = _read_flac_tags(full_path) if ext == "FLAC" else ("", "", "")
 
-                tag = "odd" if row_index[0] % 2 == 0 else "even"
-                row_index[0] += 1
-
-                self.tree.insert(
-                    "", "end",
-                    values=(full_path, file_type, artist, title, bitrate, size, modified),
-                    tags=(tag,),
-                )
-                file_count[0] += 1
+        tag = "odd" if len(self.tree.get_children()) % 2 == 0 else "even"
+        self.tree.insert(
+            "", "end",
+            values=(full_path, file_type, artist, title, bitrate, size, modified),
+            tags=(tag,),
+        )
 
     @staticmethod
     def _single_level(folder):
@@ -273,6 +273,27 @@ class ScanTab(tk.Frame):
         dirnames = [e.name for e in entries if e.is_dir(follow_symlinks=False)]
         filenames = [e.name for e in entries if e.is_file(follow_symlinks=False)]
         yield folder, dirnames, filenames
+
+    def _on_drop(self, event):
+        paths = self.tk.splitlist(event.data)
+        added = 0
+        for path in paths:
+            path = path.strip()
+            if os.path.isfile(path):
+                self._append_file(path)
+                added += 1
+            elif os.path.isdir(path):
+                for name in sorted(os.listdir(path), key=str.lower):
+                    full = os.path.join(path, name)
+                    if os.path.isfile(full):
+                        self._append_file(full)
+                        added += 1
+
+        total = len(self.tree.get_children())
+        self.status_var.set(
+            f"Added {added} file{'s' if added != 1 else ''} — {total} total."
+        )
+        self.footer_var.set(f"{total} file{'s' if total != 1 else ''} in list.")
 
     def _on_row_right_click(self, event):
         item = self.tree.identify_row(event.y)
