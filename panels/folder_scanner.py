@@ -499,7 +499,7 @@ class ScanTab(tk.Frame):
                 f"DB record found but file is missing:\n{lib_path or '(path unknown)'}")
             return
 
-        self._on_compare(src_path, lib_path)
+        self._on_compare(src_path, lib_path, partition, rel_path)
 
     def _play_files(self, paths: list[str]):
         import subprocess
@@ -534,10 +534,8 @@ class ScanTab(tk.Frame):
         )
 
     def _send_to_lib(self, paths: list[str], partition: str):
-        import shutil
-        from panels.database import upsert_track_info, compute_file_md5
         from panels.send_to_lib_panel import compute_dest_full_path, compute_dest_rel_path
-        from mutagen.flac import FLAC as _FLAC
+        from panels.lib_ops import copy_track_to_lib
 
         log = get_logger("send_to_lib")
         lib_root = self._settings.get("music_lib_paths", {}).get(partition, "")
@@ -546,36 +544,25 @@ class ScanTab(tk.Frame):
 
         for abs_path in paths:
             ext = os.path.splitext(abs_path)[1]
-            artist = title = album = bitrate = ""
+            # Derive destination paths before copy (tags read inside copy_track_to_lib)
             try:
+                from mutagen.flac import FLAC as _FLAC
                 f = _FLAC(abs_path)
                 artist  = (f.get("artist")  or f.get("ARTIST")  or [""])[0]
                 title   = (f.get("title")   or f.get("TITLE")   or [""])[0]
                 album   = (f.get("album")   or f.get("ALBUM")   or [""])[0]
-                bitrate = f"{round(f.info.bitrate / 1000)} kbps" if f.info else ""
-            except Exception as exc:
-                log.warning(f"Tag read failed: {abs_path} — {exc}")
+            except Exception:
+                artist = title = album = ""
 
             dest_full = compute_dest_full_path(lib_root, partition, artist, album, title, ext)
             rel_path  = compute_dest_rel_path(artist, album, title, ext)
 
             try:
-                os.makedirs(os.path.dirname(dest_full), exist_ok=True)
-                shutil.copy2(abs_path, dest_full)
-                log.info(f"Copied: {abs_path!r} → {dest_full!r}")
-            except Exception as exc:
-                log.error(f"File copy failed: {abs_path} — {exc}")
-                errors.append(f"{os.path.basename(abs_path)}: {exc}")
-                continue
-
-            try:
-                md5 = compute_file_md5(abs_path)
-                upsert_track_info(partition, rel_path, artist, title, album, bitrate, md5)
-                log.info(f"DB saved: {partition}/{rel_path} md5={md5}")
+                copy_track_to_lib(abs_path, dest_full, partition, rel_path)
                 copied += 1
             except Exception as exc:
-                log.error(f"DB write failed: {abs_path} — {exc}")
-                errors.append(f"{os.path.basename(abs_path)} (DB): {exc}")
+                log.error(f"Send to lib failed: {abs_path} — {exc}")
+                errors.append(f"{os.path.basename(abs_path)}: {exc}")
 
         if errors:
             log.warning(f"Send to lib finished with {len(errors)} error(s): partition={partition}")

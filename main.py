@@ -95,9 +95,9 @@ class App(TkinterDnD.Tk):
         self._settings.update(updated)
         self._scan_tab._settings.update(updated)
 
-    def _open_compare(self, src_path: str, lib_path: str):
+    def _open_compare(self, src_path: str, lib_path: str, partition: str, rel_path: str):
         """Switch to the Compare Tracks tab and load the two files."""
-        self._compare_tab.show_comparison(src_path, lib_path)
+        self._compare_tab.show_comparison(src_path, lib_path, partition, rel_path)
         # Switch to the Compare Tracks tab
         for idx in range(self._notebook.index("end")):
             if self._notebook.tab(idx, "text").strip() == "Compare Tracks":

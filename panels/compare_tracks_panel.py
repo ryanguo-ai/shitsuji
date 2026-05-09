@@ -81,6 +81,8 @@ class CompareTracksTab(tk.Frame):
         self._settings_getter = settings_getter
         self._src_path = ""
         self._lib_path = ""
+        self._partition = ""
+        self._rel_path = ""
         self._src_photo = None   # keep PhotoImage refs alive
         self._lib_photo = None
         self._build_ui()
@@ -119,12 +121,6 @@ class CompareTracksTab(tk.Frame):
         self._src_dims_var = tk.StringVar(value="")
         tk.Label(left, textvariable=self._src_dims_var,
                  font=("Segoe UI", 8), fg="#888888", bg="#f5f5f5").pack(anchor="w")
-        self._play_src_btn = ttk.Button(
-            left, text="▶  Play Scan Track in foobar2000",
-            state="disabled",
-            command=lambda: self._play(self._src_path),
-        )
-        self._play_src_btn.pack(pady=6, anchor="w")
 
         # Divider
         tk.Frame(art_row, bg="#bdc3c7", width=2).pack(
@@ -146,12 +142,22 @@ class CompareTracksTab(tk.Frame):
         self._lib_dims_var = tk.StringVar(value="")
         tk.Label(right, textvariable=self._lib_dims_var,
                  font=("Segoe UI", 8), fg="#888888", bg="#f5f5f5").pack(anchor="w")
-        self._play_lib_btn = ttk.Button(
-            right, text="▶  Play Lib Track in foobar2000",
+
+        # ── Single play button + update button below both columns ────── #
+        play_row = tk.Frame(self, bg="#f5f5f5", padx=16, pady=4)
+        play_row.pack(fill=tk.X)
+        self._play_btn = ttk.Button(
+            play_row, text="▶  Play both tracks in foobar2000",
             state="disabled",
-            command=lambda: self._play(self._lib_path),
+            command=self._play_both,
         )
-        self._play_lib_btn.pack(pady=6, anchor="w")
+        self._play_btn.pack(side=tk.LEFT)
+        self._update_btn = ttk.Button(
+            play_row, text="⬆  Update Lib Track",
+            state="disabled",
+            command=self._update_lib_track,
+        )
+        self._update_btn.pack(side=tk.LEFT, padx=(12, 0))
 
         # ── Comparison table ──────────────────────────────────────────── #
         table_frame = tk.Frame(self, bg="#f5f5f5", padx=16)
@@ -196,10 +202,13 @@ class CompareTracksTab(tk.Frame):
     # Public API                                                           #
     # ------------------------------------------------------------------ #
 
-    def show_comparison(self, src_path: str, lib_path: str):
+    def show_comparison(self, src_path: str, lib_path: str,
+                        partition: str = "", rel_path: str = ""):
         """Populate the panel with a comparison of *src_path* vs *lib_path*."""
         self._src_path = src_path
         self._lib_path = lib_path
+        self._partition = partition
+        self._rel_path = rel_path
         self._status_var.set("Loading…")
         self.update_idletasks()
 
@@ -214,10 +223,12 @@ class CompareTracksTab(tk.Frame):
         self._update_cover(self._lib_cover, lib_info["cover"],
                            lib_info["cover_dims"], self._lib_dims_var, is_src=False)
 
-        self._play_src_btn.configure(
-            state="normal" if os.path.isfile(src_path) else "disabled")
-        self._play_lib_btn.configure(
-            state="normal" if os.path.isfile(lib_path) else "disabled")
+        self._play_btn.configure(
+            state="normal" if (os.path.isfile(src_path) or os.path.isfile(lib_path))
+            else "disabled")
+        self._update_btn.configure(
+            state="normal" if (os.path.isfile(src_path) and partition and rel_path)
+            else "disabled")
 
         self._populate_table(src_info, lib_info)
         self._status_var.set(
@@ -311,7 +322,42 @@ class CompareTracksTab(tk.Frame):
 
         _add_row("File size", _fsize(src["path"]), _fsize(lib["path"]), 2)
 
-    def _play(self, path: str):
+    def _update_lib_track(self):
+        """Copy the scan track over the lib track and update the DB record."""
+        from tkinter import messagebox
+        from panels.lib_ops import copy_track_to_lib
+
+        if not self._src_path or not self._partition or not self._rel_path:
+            messagebox.showwarning("Nothing to update", "No lib track loaded.")
+            return
+
+        confirm = messagebox.askyesno(
+            "Update Lib Track",
+            f"Overwrite lib track with scan track?\n\n"
+            f"  From: {self._src_path}\n"
+            f"  To:   {self._lib_path}\n\n"
+            f"This cannot be undone.",
+        )
+        if not confirm:
+            return
+
+        try:
+            copy_track_to_lib(
+                self._src_path, self._lib_path,
+                self._partition, self._rel_path,
+            )
+            self._status_var.set(
+                f"✔  Lib track updated: {os.path.basename(self._lib_path)}"
+            )
+            # Reload comparison so cover/tags reflect the new file
+            self.show_comparison(
+                self._src_path, self._lib_path,
+                self._partition, self._rel_path,
+            )
+        except Exception as exc:
+            messagebox.showerror("Update failed", str(exc))
+
+    def _play_both(self):
         settings = self._settings_getter() if callable(self._settings_getter) else {}
         foobar = settings.get("foobar_path", "").strip()
         if not foobar:
@@ -324,4 +370,6 @@ class CompareTracksTab(tk.Frame):
                 "foobar2000 not found",
                 f"Executable not found:\n{foobar}")
             return
-        subprocess.Popen([foobar, "/play", path])
+        paths = [p for p in (self._src_path, self._lib_path) if os.path.isfile(p)]
+        if paths:
+            subprocess.Popen([foobar, "/play", *paths])
