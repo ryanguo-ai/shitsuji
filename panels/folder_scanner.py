@@ -299,27 +299,37 @@ class ScanTab(tk.Frame):
         item = self.tree.identify_row(event.y)
         if not item:
             return
-        self.tree.selection_set(item)
-        values = self.tree.item(item, "values")
-        full_path = values[0]
-        ext = os.path.splitext(full_path)[1].lstrip(".").upper()
+
+        # Keep existing multi-selection if right-click lands on a selected row;
+        # otherwise select only the clicked row.
+        if item not in self.tree.selection():
+            self.tree.selection_set(item)
+
+        selected = self.tree.selection()
+        paths = [self.tree.item(i, "values")[0] for i in selected]
+        audio_paths = [
+            p for p in paths
+            if os.path.splitext(p)[1].lstrip(".").upper() in AUDIO_EXTENSIONS
+        ]
 
         menu = tk.Menu(self, tearoff=0)
 
-        if ext in AUDIO_EXTENSIONS:
+        if audio_paths:
+            n = len(audio_paths)
+            label = f"▶  Play {n} file{'s' if n > 1 else ''} in foobar2000"
             menu.add_command(
-                label="▶  Play in foobar2000",
-                command=lambda: self._play_file(full_path),
+                label=label,
+                command=lambda: self._play_files(audio_paths),
             )
             menu.add_separator()
 
         menu.add_command(
-            label="Copy File Path",
-            command=lambda: self._copy_path(full_path),
+            label=f"Copy Path{'s' if len(paths) > 1 else ''}",
+            command=lambda: self._copy_paths(paths),
         )
         menu.tk_popup(event.x_root, event.y_root)
 
-    def _play_file(self, path: str):
+    def _play_files(self, paths: list[str]):
         import subprocess
         foobar = self._settings.get("foobar_path", "").strip()
         if not foobar:
@@ -330,11 +340,11 @@ class ScanTab(tk.Frame):
             messagebox.showerror("foobar2000 not found",
                                  f"Executable not found:\n{foobar}")
             return
-        subprocess.Popen([foobar, "/play", path])
+        subprocess.Popen([foobar, "/play", *paths])
 
-    def _copy_path(self, path: str):
+    def _copy_paths(self, paths: list[str]):
         self.clipboard_clear()
-        self.clipboard_append(path)
+        self.clipboard_append("\n".join(paths))
 
     def _on_row_select(self, event):
         selected = self.tree.selection()
