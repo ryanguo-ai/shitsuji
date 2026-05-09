@@ -2,7 +2,6 @@
 Folder Scanner UI — browse and list all files in a selected directory.
 """
 
-import json
 import os
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -11,13 +10,11 @@ from datetime import datetime
 from mutagen.flac import FLAC
 
 from panels.audio_details_panel import AudioDetailsPanel
+from panels.settings_panel import load_settings
 
 AUDIO_EXTENSIONS = {
     "FLAC", "MP3", "AAC", "OGG", "OPUS", "WAV", "AIFF", "APE",
     "WV", "M4A", "WMA", "DSF", "DFF", "MPC",
-}
-DEFAULTS = {
-    "foobar_path": r"C:\_soft\foobar2000_2.25.8\foobar2000.exe",
 }
 
 
@@ -46,7 +43,7 @@ class ScanTab(tk.Frame):
 
     def __init__(self, master):
         super().__init__(master, bg="#f5f5f5")
-        self._settings = self._load_settings()
+        self._settings = load_settings()
         self._build_ui()
 
     # ------------------------------------------------------------------ #
@@ -64,15 +61,7 @@ class ScanTab(tk.Frame):
             fg="white", bg="#2c3e50",
         ).pack(side=tk.LEFT)
 
-        tk.Button(
-            top, text="⚙", font=("Segoe UI", 14),
-            fg="white", bg="#2c3e50",
-            activeforeground="#ecf0f1", activebackground="#34495e",
-            relief=tk.FLAT, bd=0, cursor="hand2",
-            command=self._open_settings,
-        ).pack(side=tk.RIGHT)
-
-        # ── Path entry row ────────────────────────────────────────────── #
+        # ── Path entry row────────────────────────────────────────────── #
         row = tk.Frame(self, bg="#f5f5f5", pady=10, padx=16)
         row.pack(fill=tk.X)
 
@@ -176,79 +165,6 @@ class ScanTab(tk.Frame):
             font=("Segoe UI", 9), bg="#bdc3c7",
             anchor="w", padx=8,
         ).pack(fill=tk.X)
-
-    # ------------------------------------------------------------------ #
-    # Settings                                                            #
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _load_settings() -> dict:
-        try:
-            return {**DEFAULTS, **json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))}
-        except Exception:
-            return dict(DEFAULTS)
-
-    def _save_settings(self):
-        try:
-            SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-            SETTINGS_PATH.write_text(
-                json.dumps(self._settings, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
-        except Exception as exc:
-            messagebox.showerror("Save failed", str(exc))
-
-    def _open_settings(self):
-        dlg = tk.Toplevel(self)
-        dlg.title("Settings")
-        dlg.resizable(False, False)
-        dlg.grab_set()
-
-        # Center over main window
-        self.update_idletasks()
-        w, h = 480, 120
-        mx = self.winfo_x() + (self.winfo_width() - w) // 2
-        my = self.winfo_y() + (self.winfo_height() - h) // 2
-        dlg.geometry(f"{w}x{h}+{mx}+{my}")
-        dlg.configure(bg="#f5f5f5")
-
-        # ── foobar2000 path ── #
-        frm = tk.Frame(dlg, bg="#f5f5f5", padx=16, pady=16)
-        frm.pack(fill=tk.BOTH, expand=True)
-
-        tk.Label(frm, text="foobar2000 path:", font=("Segoe UI", 9),
-                 bg="#f5f5f5").grid(row=0, column=0, sticky=tk.W, pady=(0, 6))
-
-        foobar_var = tk.StringVar(value=self._settings.get("foobar_path", ""))
-        entry = tk.Entry(frm, textvariable=foobar_var, font=("Segoe UI", 9),
-                         relief=tk.SOLID, bd=1, width=42)
-        entry.grid(row=0, column=1, sticky=tk.EW, padx=(8, 4), pady=(0, 6))
-
-        def browse_foobar():
-            path = filedialog.askopenfilename(
-                title="Select foobar2000.exe",
-                filetypes=[("Executable", "*.exe"), ("All files", "*.*")],
-                initialfile=foobar_var.get(),
-            )
-            if path:
-                foobar_var.set(path)
-
-        ttk.Button(frm, text="…", width=3, command=browse_foobar).grid(
-            row=0, column=2, pady=(0, 6))
-
-        frm.columnconfigure(1, weight=1)
-
-        # ── Buttons ── #
-        btn_frm = tk.Frame(dlg, bg="#f5f5f5", padx=16, pady=(0, 12))
-        btn_frm.pack(fill=tk.X)
-
-        def save():
-            self._settings["foobar_path"] = foobar_var.get().strip()
-            self._save_settings()
-            dlg.destroy()
-
-        ttk.Button(btn_frm, text="Save", command=save).pack(side=tk.RIGHT, padx=(4, 0))
-        ttk.Button(btn_frm, text="Cancel", command=dlg.destroy).pack(side=tk.RIGHT)
 
     # ------------------------------------------------------------------ #
     # Actions                                                              #
