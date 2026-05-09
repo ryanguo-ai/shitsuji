@@ -73,6 +73,27 @@ CREATE INDEX IF NOT EXISTS idx_track_info_artist    ON track_info (artist);
 CREATE INDEX IF NOT EXISTS idx_track_info_album     ON track_info (album);
 ```
 
+### `track_tags`
+
+Arbitrary key-value tags for a `track_info` row.
+One row per tag; `(track_id, tag_name)` is unique so upserts are safe.
+Deleting a `track_info` row cascades and removes all its tags automatically.
+
+```sql
+CREATE TABLE IF NOT EXISTS track_tags (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id   INTEGER NOT NULL
+                   REFERENCES track_info (id) ON DELETE CASCADE,
+    tag_name   TEXT    NOT NULL,   -- e.g. "ARTIST", "ALBUM", "DATE", "LYRICS"
+    tag_value  TEXT,               -- raw tag value string
+
+    UNIQUE (track_id, tag_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_track_tags_track_id ON track_tags (track_id);
+CREATE INDEX IF NOT EXISTS idx_track_tags_tag_name ON track_tags (tag_name);
+```
+
 **Partitions** (configured in Settings → Music library folder paths):
 
 | Partition | Default root |

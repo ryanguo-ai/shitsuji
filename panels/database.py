@@ -49,9 +49,24 @@ _DDL = """
         UNIQUE (partition, rel_path)
     );
 
-    CREATE INDEX IF NOT EXISTS idx_track_info_partition ON track_info (partition);
-    CREATE INDEX IF NOT EXISTS idx_track_info_artist    ON track_info (artist);
-    CREATE INDEX IF NOT EXISTS idx_track_info_album     ON track_info (album);
+    -- ------------------------------------------------------------------ --
+    -- track_tags                                                           --
+    -- Arbitrary key-value tags for a track_info row.                      --
+    -- One row per tag; (track_id, tag_name) is unique so upserts are      --
+    -- safe and there are no duplicate tag names per track.                 --
+    -- ------------------------------------------------------------------ --
+    CREATE TABLE IF NOT EXISTS track_tags (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        track_id   INTEGER NOT NULL
+                       REFERENCES track_info (id) ON DELETE CASCADE,
+        tag_name   TEXT    NOT NULL,
+        tag_value  TEXT,
+
+        UNIQUE (track_id, tag_name)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_track_tags_track_id  ON track_tags (track_id);
+    CREATE INDEX IF NOT EXISTS idx_track_tags_tag_name  ON track_tags (tag_name);
 """
 
 
@@ -65,10 +80,10 @@ def init_db() -> None:
         if "bitrate" not in cols:
             conn.execute("ALTER TABLE track_info ADD COLUMN bitrate TEXT")
 
-
 @contextmanager
 def _connect():
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -181,9 +196,66 @@ def get_track_info(partition: str | None = None) -> list[sqlite3.Row]:
 
 
 def delete_track_info(partition: str, rel_path: str) -> None:
-    """Remove a single track_info record."""
+    """Remove a single track_info record (cascades to track_tags)."""
     with _connect() as conn:
         conn.execute(
             "DELETE FROM track_info WHERE partition = ? AND rel_path = ?",
             (partition, rel_path),
         )
+
+
+# ------------------------------------------------------------------ #
+# track_tags helpers                                                   #
+# ------------------------------------------------------------------ #
+
+def set_tag(track_id: int, tag_name: str, tag_value: str) -> None:
+    """Insert or replace a single tag for a track."""
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO track_tags (track_id, tag_name, tag_value)
+            VALUES (?, ?, ?)
+            ON CONFLICT(track_id, tag_name) DO UPDATE SET
+                tag_value = excluded.tag_value
+            """,
+            (track_id, tag_name, tag_value),
+        )
+
+
+def set_tags(track_id: int, tags: dict[str, str]) -> None:
+    """Bulk-replace all supplied tags for a track (other existing tags are untouched)."""
+    with _connect() as conn:
+        conn.executemany(
+            """
+            INSERT INTO track_tags (track_id, tag_name, tag_value)
+            VALUES (?, ?, ?)
+            ON CONFLICT(track_id, tag_name) DO UPDATE SET
+                tag_value = excluded.tag_value
+            """,
+            [(track_id, k, v) for k, v in tags.items()],
+        )
+
+
+def get_tags(track_id: int) -> dict[str, str]:
+    """Return all tags for a track as {tag_name: tag_value}."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT tag_name, tag_value FROM track_tags WHERE track_id = ? ORDER BY tag_name",
+            (track_id,),
+        ).fetchall()
+    return {r["tag_name"]: r["tag_value"] for r in rows}
+
+
+def delete_tag(track_id: int, tag_name: str) -> None:
+    """Remove a single tag from a track."""
+    with _connect() as conn:
+        conn.execute(
+            "DELETE FROM track_tags WHERE track_id = ? AND tag_name = ?",
+            (track_id, tag_name),
+        )
+
+
+def delete_all_tags(track_id: int) -> None:
+    """Remove all tags for a track."""
+    with _connect() as conn:
+        conn.execute("DELETE FROM track_tags WHERE track_id = ?", (track_id,))
