@@ -2,6 +2,7 @@
 Music inventory database — SQLite schema and access helpers.
 """
 
+import hashlib
 import pathlib
 import sqlite3
 from contextlib import contextmanager
@@ -44,6 +45,7 @@ _DDL = """
         title        TEXT,
         album        TEXT,
         bitrate      TEXT,
+        file_md5     TEXT,                -- MD5 hex digest of the source file
         updated_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
 
         UNIQUE (partition, rel_path)
@@ -75,10 +77,12 @@ def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with _connect() as conn:
         conn.executescript(_DDL)
-        # Migration: add bitrate to track_info if upgrading from older schema
+        # Migrations for track_info schema evolution
         cols = {r[1] for r in conn.execute("PRAGMA table_info(track_info)")}
         if "bitrate" not in cols:
             conn.execute("ALTER TABLE track_info ADD COLUMN bitrate TEXT")
+        if "file_md5" not in cols:
+            conn.execute("ALTER TABLE track_info ADD COLUMN file_md5 TEXT")
 
 @contextmanager
 def _connect():
@@ -157,6 +161,15 @@ def clear_all_tracks() -> None:
 # track_info helpers                                                   #
 # ------------------------------------------------------------------ #
 
+def compute_file_md5(file_path: str, chunk_size: int = 1 << 20) -> str:
+    """Return the MD5 hex digest of a file, reading in chunks to handle large files."""
+    h = hashlib.md5()
+    with open(file_path, "rb") as fh:
+        while chunk := fh.read(chunk_size):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def upsert_track_info(
     partition: str,
     rel_path: str,
@@ -164,22 +177,34 @@ def upsert_track_info(
     title: str = "",
     album: str = "",
     bitrate: str = "",
+    file_md5: str = "",
 ) -> None:
     """Insert or update a track_info record identified by (partition, rel_path)."""
     with _connect() as conn:
         conn.execute(
             """
-            INSERT INTO track_info (partition, rel_path, artist, title, album, bitrate, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%S', 'now'))
+            INSERT INTO track_info
+                (partition, rel_path, artist, title, album, bitrate, file_md5, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%S', 'now'))
             ON CONFLICT(partition, rel_path) DO UPDATE SET
                 artist     = excluded.artist,
                 title      = excluded.title,
                 album      = excluded.album,
                 bitrate    = excluded.bitrate,
+                file_md5   = excluded.file_md5,
                 updated_at = excluded.updated_at
             """,
-            (partition, rel_path, artist, title, album, bitrate),
+            (partition, rel_path, artist, title, album, bitrate, file_md5),
         )
+
+
+def find_by_md5(file_md5: str) -> list[sqlite3.Row]:
+    """Return all track_info rows that share the given MD5 digest."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM track_info WHERE file_md5 = ? ORDER BY partition, rel_path",
+            (file_md5,),
+        ).fetchall()
 
 
 def get_track_info(partition: str | None = None) -> list[sqlite3.Row]:

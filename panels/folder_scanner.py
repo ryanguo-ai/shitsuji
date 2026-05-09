@@ -498,7 +498,7 @@ class ScanTab(tk.Frame):
 
     def _send_to_lib(self, paths: list[str], partition: str):
         import shutil
-        from panels.database import upsert_track_info
+        from panels.database import upsert_track_info, compute_file_md5
         from panels.send_to_lib_panel import compute_dest_full_path, compute_dest_rel_path
         from mutagen.flac import FLAC as _FLAC
 
@@ -532,8 +532,9 @@ class ScanTab(tk.Frame):
                 continue
 
             try:
-                upsert_track_info(partition, rel_path, artist, title, album, bitrate)
-                log.info(f"DB saved: {partition}/{rel_path}")
+                md5 = compute_file_md5(abs_path)
+                upsert_track_info(partition, rel_path, artist, title, album, bitrate, md5)
+                log.info(f"DB saved: {partition}/{rel_path} md5={md5}")
                 copied += 1
             except Exception as exc:
                 log.error(f"DB write failed: {abs_path} — {exc}")

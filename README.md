@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS track_info (
     title        TEXT,                     -- e.g. "Girls Just Want to Have Fun"
     album        TEXT,                     -- e.g. "She's So Unusual"
     bitrate      TEXT,                     -- e.g. "1411 kbps"
+    file_md5     TEXT,                     -- MD5 hex digest of the source file (for duplicate detection)
     updated_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
 
     UNIQUE (partition, rel_path)
