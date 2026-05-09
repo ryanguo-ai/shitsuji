@@ -11,8 +11,12 @@ from panels.database import DB_PATH
 
 SETTINGS_PATH = pathlib.Path.home() / ".shitsuji" / "settings.json"
 
+MUSIC_LIB_PARTITIONS = ["POP", "CPOP", "JPOP", "OST", "Instrumental", "OTHER"]
+_DEFAULT_MUSIC_LIB_PATH = r"C:\_MUSIC_LIB"
+
 DEFAULTS: dict = {
     "foobar_path": r"C:\_soft\foobar2000_2.25.8\foobar2000.exe",
+    "music_lib_paths": {p: _DEFAULT_MUSIC_LIB_PATH for p in MUSIC_LIB_PARTITIONS},
 }
 
 
@@ -55,48 +59,72 @@ class SettingsDialog(tk.Toplevel):
     # ------------------------------------------------------------------ #
 
     def _build(self):
-        # ── foobar2000 path ── #
-        frm = tk.Frame(self, bg="#f5f5f5", padx=16, pady=16)
-        frm.pack(fill=tk.BOTH, expand=True)
+        outer = tk.Frame(self, bg="#f5f5f5", padx=16, pady=16)
+        outer.pack(fill=tk.BOTH, expand=True)
 
-        tk.Label(frm, text="foobar2000 path:", font=("Segoe UI", 9),
-                 bg="#f5f5f5").grid(row=0, column=0, sticky=tk.W, pady=(0, 6))
+        # ── foobar2000 path ── #
+        tk.Label(outer, text="foobar2000 path:", font=("Segoe UI", 9, "bold"),
+                 bg="#f5f5f5", anchor="w").grid(row=0, column=0, sticky=tk.W, pady=(0, 4))
 
         self._foobar_var = tk.StringVar(value=self._settings.get("foobar_path", ""))
         tk.Entry(
-            frm, textvariable=self._foobar_var,
-            font=("Segoe UI", 9), relief=tk.SOLID, bd=1, width=44,
-        ).grid(row=0, column=1, sticky=tk.EW, padx=(8, 4), pady=(0, 6))
+            outer, textvariable=self._foobar_var,
+            font=("Segoe UI", 9), relief=tk.SOLID, bd=1, width=46,
+        ).grid(row=0, column=1, sticky=tk.EW, padx=(8, 4), pady=(0, 4))
+        ttk.Button(outer, text="…", width=3, command=self._browse_foobar).grid(
+            row=0, column=2, pady=(0, 4))
 
-        ttk.Button(frm, text="…", width=3, command=self._browse_foobar).grid(
-            row=0, column=2, pady=(0, 6))
+        # ── Music library folder paths ── #
+        ttk.Separator(outer, orient=tk.HORIZONTAL).grid(
+            row=1, column=0, columnspan=3, sticky=tk.EW, pady=(8, 10))
 
-        frm.columnconfigure(1, weight=1)
+        tk.Label(outer, text="Music library folder paths:",
+                 font=("Segoe UI", 9, "bold"), bg="#f5f5f5", anchor="w").grid(
+            row=2, column=0, columnspan=3, sticky=tk.W, pady=(0, 6))
+
+        saved_paths: dict = self._settings.get("music_lib_paths", {})
+        self._lib_vars: dict[str, tk.StringVar] = {}
+
+        for idx, partition in enumerate(MUSIC_LIB_PARTITIONS):
+            row = 3 + idx
+            default = saved_paths.get(partition, _DEFAULT_MUSIC_LIB_PATH)
+            var = tk.StringVar(value=default)
+            self._lib_vars[partition] = var
+
+            tk.Label(outer, text=f"{partition}:", font=("Segoe UI", 9),
+                     bg="#f5f5f5", anchor="e", width=12).grid(
+                row=row, column=0, sticky=tk.E, pady=2)
+            tk.Entry(outer, textvariable=var, font=("Segoe UI", 9),
+                     relief=tk.SOLID, bd=1).grid(
+                row=row, column=1, sticky=tk.EW, padx=(8, 4), pady=2)
+            ttk.Button(
+                outer, text="…", width=3,
+                command=lambda v=var: self._browse_lib(v),
+            ).grid(row=row, column=2, pady=2)
+
+        outer.columnconfigure(1, weight=1)
 
         # ── File paths (read-only info) ── #
-        ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=16)
+        sep_row = 3 + len(MUSIC_LIB_PARTITIONS)
+        ttk.Separator(outer, orient=tk.HORIZONTAL).grid(
+            row=sep_row, column=0, columnspan=3, sticky=tk.EW, pady=(10, 6))
 
-        info_frm = tk.Frame(self, bg="#f5f5f5", padx=16, pady=8)
-        info_frm.pack(fill=tk.X)
-
-        for label, path in (("Settings file:", SETTINGS_PATH), ("Database file:", DB_PATH)):
-            row = tk.Frame(info_frm, bg="#f5f5f5")
-            row.pack(fill=tk.X, pady=1)
-            tk.Label(
-                row, text=label, width=13, anchor="w",
-                font=("Segoe UI", 8), fg="#7f8c8d", bg="#f5f5f5",
-            ).pack(side=tk.LEFT)
-            tk.Label(
-                row, text=str(path),
-                font=("Segoe UI", 8), fg="#555555", bg="#f5f5f5",
-            ).pack(side=tk.LEFT, padx=(4, 0))
+        for i, (label, path) in enumerate(
+            (("Settings file:", SETTINGS_PATH), ("Database file:", DB_PATH))
+        ):
+            info_row = sep_row + 1 + i
+            tk.Label(outer, text=label, font=("Segoe UI", 8), fg="#7f8c8d",
+                     bg="#f5f5f5", anchor="e", width=12).grid(
+                row=info_row, column=0, sticky=tk.E, pady=1)
+            tk.Label(outer, text=str(path), font=("Segoe UI", 8), fg="#555555",
+                     bg="#f5f5f5", anchor="w").grid(
+                row=info_row, column=1, columnspan=2, sticky=tk.W, padx=(8, 0), pady=1)
 
         # ── Action buttons ── #
         btn_frm = tk.Frame(self, bg="#f5f5f5", padx=16, pady=(0, 12))
         btn_frm.pack(fill=tk.X)
-
-        ttk.Button(btn_frm, text="Save", command=self._save).pack(side=tk.RIGHT, padx=(4, 0))
-        ttk.Button(btn_frm, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Button(btn_frm, text="Save",   command=self._save   ).pack(side=tk.RIGHT, padx=(4, 0))
+        ttk.Button(btn_frm, text="Cancel", command=self.destroy  ).pack(side=tk.RIGHT)
 
     def _center(self):
         """Center the dialog on the screen using its actual required size."""
@@ -122,8 +150,19 @@ class SettingsDialog(tk.Toplevel):
         if path:
             self._foobar_var.set(path)
 
+    def _browse_lib(self, var: tk.StringVar):
+        folder = filedialog.askdirectory(
+            title="Select music library folder",
+            initialdir=var.get() or _DEFAULT_MUSIC_LIB_PATH,
+        )
+        if folder:
+            var.set(folder)
+
     def _save(self):
         self._settings["foobar_path"] = self._foobar_var.get().strip()
+        self._settings["music_lib_paths"] = {
+            p: var.get().strip() for p, var in self._lib_vars.items()
+        }
         save_settings(self._settings)
         self._on_save(self._settings)
         self.destroy()
