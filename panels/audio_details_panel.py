@@ -1,10 +1,11 @@
 """
 Audio Details Panel — shows cover art and tags for a selected audio file.
+Double-click any tag row to edit the tag name or value; Save Tags writes to disk.
 """
 
 import io
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 
 from mutagen.flac import FLAC
 from PIL import Image, ImageTk
@@ -15,6 +16,8 @@ class AudioDetailsPanel(tk.Frame):
     def __init__(self, master):
         super().__init__(master, bg="#f0f0f0", width=280)
         self._cover_photo = None  # keep reference to avoid GC
+        self._current_path: str | None = None
+        self._dirty = False
         self._build()
 
     # ------------------------------------------------------------------ #
@@ -41,11 +44,11 @@ class AudioDetailsPanel(tk.Frame):
 
         # Tags table
         tag_frame = tk.Frame(self, bg="#f0f0f0")
-        tag_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        tag_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 0))
 
         self._tag_tree = ttk.Treeview(
             tag_frame, columns=("tag", "value"), show="headings",
-            selectmode="none",
+            selectmode="browse",
         )
         self._tag_tree.heading("tag", text="Tag", anchor=tk.W)
         self._tag_tree.heading("value", text="Value", anchor=tk.W)
@@ -57,6 +60,89 @@ class AudioDetailsPanel(tk.Frame):
         tag_vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self._tag_tree.pack(fill=tk.BOTH, expand=True)
 
+        self._tag_tree.bind("<Double-1>", self._start_edit)
+
+        # Save button
+        btn_frame = tk.Frame(self, bg="#f0f0f0")
+        btn_frame.pack(fill=tk.X, padx=4, pady=4)
+        self._save_btn = ttk.Button(
+            btn_frame, text="Save Tags",
+            command=self._save_tags, state="disabled",
+        )
+        self._save_btn.pack(side=tk.RIGHT)
+
+    # ------------------------------------------------------------------ #
+    # Inline editing                                                       #
+    # ------------------------------------------------------------------ #
+
+    def _start_edit(self, event):
+        item = self._tag_tree.identify_row(event.y)
+        col = self._tag_tree.identify_column(event.x)  # '#1' or '#2'
+        if not item or col not in ("#1", "#2"):
+            return
+
+        bbox = self._tag_tree.bbox(item, col)
+        if not bbox:
+            return
+        x, y, w, h = bbox
+
+        col_idx = int(col[1:]) - 1  # '#1'→0, '#2'→1
+        current = self._tag_tree.item(item, "values")[col_idx]
+
+        var = tk.StringVar(value=current)
+        entry = tk.Entry(
+            self._tag_tree, textvariable=var,
+            font=("Segoe UI", 9), relief=tk.SOLID, bd=1,
+        )
+        entry.place(x=x, y=y, width=w, height=h)
+        entry.select_range(0, tk.END)
+        entry.focus_set()
+
+        done = [False]
+
+        def commit(_=None):
+            if done[0]:
+                return
+            done[0] = True
+            entry.destroy()
+            vals = list(self._tag_tree.item(item, "values"))
+            vals[col_idx] = var.get().strip()
+            self._tag_tree.item(item, values=vals)
+            self._mark_dirty()
+
+        def cancel(_=None):
+            done[0] = True
+            entry.destroy()
+
+        entry.bind("<Return>", commit)
+        entry.bind("<Tab>", commit)
+        entry.bind("<Escape>", cancel)
+        entry.bind("<FocusOut>", commit)
+
+    def _mark_dirty(self):
+        self._dirty = True
+        self._save_btn.configure(state="normal")
+
+    # ------------------------------------------------------------------ #
+    # Saving                                                               #
+    # ------------------------------------------------------------------ #
+
+    def _save_tags(self):
+        if not self._current_path or not self._dirty:
+            return
+        try:
+            flac = FLAC(self._current_path)
+            flac.tags.clear()
+            for iid in self._tag_tree.get_children():
+                key, val = self._tag_tree.item(iid, "values")
+                if key:
+                    flac[key.lower()] = [val]
+            flac.save()
+            self._dirty = False
+            self._save_btn.configure(state="disabled")
+        except Exception as exc:
+            messagebox.showerror("Save failed", str(exc))
+
     # ------------------------------------------------------------------ #
     # Public API                                                           #
     # ------------------------------------------------------------------ #
@@ -64,6 +150,7 @@ class AudioDetailsPanel(tk.Frame):
     def show_flac(self, path: str):
         """Populate the panel with cover art and tags from a FLAC file."""
         self.clear()
+        self._current_path = path
         try:
             flac = FLAC(path)
         except Exception:
@@ -94,6 +181,9 @@ class AudioDetailsPanel(tk.Frame):
 
     def clear(self):
         """Reset the panel to its empty state."""
+        self._current_path = None
+        self._dirty = False
+        self._save_btn.configure(state="disabled")
         self._cover_label.configure(image="", text="No cover art")
         self._cover_photo = None
         self._tag_tree.delete(*self._tag_tree.get_children())
