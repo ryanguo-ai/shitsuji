@@ -7,6 +7,8 @@ import pathlib
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
+from panels.database import DB_PATH
+
 SETTINGS_PATH = pathlib.Path.home() / ".shitsuji" / "settings.json"
 
 DEFAULTS: dict = {
@@ -71,21 +73,23 @@ class SettingsDialog(tk.Toplevel):
 
         frm.columnconfigure(1, weight=1)
 
-        # ── Settings file path (read-only) ── #
+        # ── File paths (read-only info) ── #
         ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=16)
 
         info_frm = tk.Frame(self, bg="#f5f5f5", padx=16, pady=8)
         info_frm.pack(fill=tk.X)
 
-        tk.Label(
-            info_frm, text="Settings file:",
-            font=("Segoe UI", 8), fg="#7f8c8d", bg="#f5f5f5",
-        ).pack(side=tk.LEFT)
-
-        tk.Label(
-            info_frm, text=str(SETTINGS_PATH),
-            font=("Segoe UI", 8), fg="#555555", bg="#f5f5f5",
-        ).pack(side=tk.LEFT, padx=(4, 0))
+        for label, path in (("Settings file:", SETTINGS_PATH), ("Database file:", DB_PATH)):
+            row = tk.Frame(info_frm, bg="#f5f5f5")
+            row.pack(fill=tk.X, pady=1)
+            tk.Label(
+                row, text=label, width=13, anchor="w",
+                font=("Segoe UI", 8), fg="#7f8c8d", bg="#f5f5f5",
+            ).pack(side=tk.LEFT)
+            tk.Label(
+                row, text=str(path),
+                font=("Segoe UI", 8), fg="#555555", bg="#f5f5f5",
+            ).pack(side=tk.LEFT, padx=(4, 0))
 
         # ── Action buttons ── #
         btn_frm = tk.Frame(self, bg="#f5f5f5", padx=16, pady=(0, 12))

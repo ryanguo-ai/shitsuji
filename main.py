@@ -7,13 +7,16 @@ from tkinter import ttk
 
 from panels.folder_scanner import ScanTab
 from panels.search_panel import SearchTab
-from panels.settings_panel import SettingsDialog
+from panels.settings_panel import SettingsDialog, load_settings, save_settings
+from panels.database import init_db
 
 
 class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
+        init_db()
+        self._settings = load_settings()
         self.title("Shitsuji")
 
         screen_w = self.winfo_screenwidth()
@@ -30,12 +33,15 @@ class App(tk.Tk):
 
         self._build_toolbar()
 
-        notebook = ttk.Notebook(self)
-        notebook.pack(fill=tk.BOTH, expand=True)
+        self._notebook = ttk.Notebook(self)
+        self._notebook.pack(fill=tk.BOTH, expand=True)
 
-        self._scan_tab = ScanTab(notebook)
-        notebook.add(SearchTab(notebook), text="  Search  ")
-        notebook.add(self._scan_tab, text="  Scan  ")
+        self._scan_tab = ScanTab(self._notebook)
+        self._notebook.add(SearchTab(self._notebook), text="  Search  ")
+        self._notebook.add(self._scan_tab, text="  Scan  ")
+
+        self._restore_active_tab()
+        self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
     # ------------------------------------------------------------------ #
     # Toolbar                                                              #
@@ -62,9 +68,30 @@ class App(tk.Tk):
     def _open_settings(self):
         SettingsDialog(
             self,
-            self._scan_tab._settings,
-            on_save=lambda updated: self._scan_tab._settings.update(updated),
+            self._settings,
+            on_save=self._on_settings_saved,
         )
+
+    def _on_settings_saved(self, updated: dict):
+        self._settings.update(updated)
+        self._scan_tab._settings.update(updated)
+
+    # ------------------------------------------------------------------ #
+    # Tab persistence                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _on_tab_changed(self, _event):
+        tab_id = self._notebook.select()
+        tab_name = self._notebook.tab(tab_id, "text").strip()
+        self._settings["active_tab"] = tab_name
+        save_settings(self._settings)
+
+    def _restore_active_tab(self):
+        saved = self._settings.get("active_tab", "")
+        for idx in range(self._notebook.index("end")):
+            if self._notebook.tab(idx, "text").strip() == saved:
+                self._notebook.select(idx)
+                break
 
 
 if __name__ == "__main__":
