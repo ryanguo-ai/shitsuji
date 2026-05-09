@@ -53,6 +53,22 @@ def compute_dest_rel_path(artist: str, album: str, title: str, ext: str) -> str:
     return os.path.join(folder, filename)
 
 
+def compute_dest_full_path(lib_root: str, partition: str,
+                           artist: str, album: str, title: str, ext: str) -> str:
+    """
+    Build the full absolute destination path for a track.
+
+    Structure:
+        {lib_root}/{partition}/{first_word}/{artist}/{artist} - {album}/{artist} - {title}.{ext}
+
+    Example:
+        C:/_MUSIC_LIB/POP/Cyndi/Cyndi Lauper/Cyndi Lauper - She's So Unusual/
+            Cyndi Lauper - Girls Just Want to Have Fun.flac
+    """
+    rel = compute_dest_rel_path(artist, album, title, ext)
+    return os.path.join(lib_root, partition, rel)
+
+
 def _read_tags(path: str) -> tuple[str, str, str]:
     """Return (artist, album, title) from a FLAC file; empty strings on failure."""
     try:
@@ -197,16 +213,18 @@ class SendToLibPanel(tk.Toplevel):
             if not (artist and title):
                 missing_tags += 1
 
-            dest_rel = compute_dest_rel_path(artist, album, title, ext)
+            dest_full = compute_dest_full_path(
+                self._lib_root, self._partition, artist, album, title, ext
+            )
 
             row_tag = "warn" if not (artist and title) else ("odd" if i % 2 == 0 else "even")
             self._tree.insert(
                 "", "end",
-                values=(fname, artist, album, title, dest_rel),
+                values=(fname, artist, album, title, dest_full),
                 tags=(row_tag,),
             )
             self._log.info(
-                f"Preview: {fname!r} → {self._partition}/{dest_rel}"
+                f"Preview: {fname!r} → {dest_full}"
             )
 
         n = len(self._paths)
