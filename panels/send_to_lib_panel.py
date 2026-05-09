@@ -11,6 +11,7 @@ Example:
         Cyndi Lauper - Girls Just Want to Have Fun.flac
 """
 
+import io
 import os
 import re
 import tkinter as tk
@@ -29,9 +30,32 @@ def _sanitize(name: str) -> str:
     return _ILLEGAL.sub("_", name).strip()
 
 
+def _is_cjk(ch: str) -> bool:
+    """Return True if *ch* is a CJK / East-Asian ideograph or syllable."""
+    cp = ord(ch)
+    return (
+        0x2E80  <= cp <= 0x2EFF  or   # CJK Radicals Supplement
+        0x3000  <= cp <= 0x9FFF  or   # CJK Unified Ideographs (+ kana, hangul intro)
+        0xA000  <= cp <= 0xA4CF  or   # Yi Syllables / Radicals
+        0xAC00  <= cp <= 0xD7AF  or   # Hangul Syllables
+        0xF900  <= cp <= 0xFAFF  or   # CJK Compatibility Ideographs
+        0x20000 <= cp <= 0x2A6DF       # CJK Extension B–F
+    )
+
+
 def _first_word(artist: str) -> str:
-    """Return the first whitespace-separated token of the artist name."""
-    parts = artist.strip().split()
+    """
+    Return the index token used as the top-level folder for an artist.
+
+    - ASCII / Western names  → first whitespace-separated word  (e.g. "Cyndi")
+    - CJK / East-Asian names → first character only             (e.g. "张")
+    """
+    name = artist.strip()
+    if not name:
+        return "Unknown"
+    if _is_cjk(name[0]):
+        return name[0]
+    parts = name.split()
     return parts[0] if parts else "Unknown"
 
 
@@ -79,6 +103,58 @@ def _read_tags(path: str) -> tuple[str, str, str]:
         return artist, album, title
     except Exception:
         return "", "", ""
+
+
+def _check_lib_ready(path: str) -> bool:
+    """Return True if ARTIST/TITLE/ALBUM tags are present AND cover > 320×320."""
+    try:
+        from PIL import Image
+        flac = FLAC(path)
+        tags = flac.tags or {}
+        if not (tags.get("artist", [""])[0] and
+                tags.get("title",  [""])[0] and
+                tags.get("album",  [""])[0]):
+            return False
+        for pic in flac.pictures:
+            img = Image.open(io.BytesIO(pic.data))
+            if img.width > 320 and img.height > 320:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _build_lib_index() -> tuple[set[str], set[tuple[str, str, str]]]:
+    """Return (md5_set, aat_set) from track_info for In Lib matching."""
+    from panels.database import get_track_info
+    md5_set: set[str] = set()
+    aat_set: set[tuple[str, str, str]] = set()
+    for row in get_track_info():
+        if row["file_md5"]:
+            md5_set.add(row["file_md5"].strip().lower())
+        aat_set.add((
+            (row["artist"] or "").strip().lower(),
+            (row["title"]  or "").strip().lower(),
+            (row["album"]  or "").strip().lower(),
+        ))
+    return md5_set, aat_set
+
+
+def _inlib_status(path: str, artist: str, title: str, album: str,
+                  md5_set: set[str],
+                  aat_set: set[tuple[str, str, str]]) -> str:
+    """Return 🟢 / 🟡 / ⬛ In Lib indicator for one file."""
+    from panels.database import compute_file_md5
+    try:
+        md5 = compute_file_md5(path).lower()
+    except Exception:
+        md5 = ""
+    if md5 and md5 in md5_set:
+        return "🟢"
+    key = (artist.strip().lower(), title.strip().lower(), album.strip().lower())
+    if key[0] and key[1] and key in aat_set:
+        return "🟡"
+    return "⬛"
 
 
 class SendToLibPanel(tk.Toplevel):
@@ -152,21 +228,24 @@ class SendToLibPanel(tk.Toplevel):
         tree_frm = tk.Frame(self, bg="#f5f5f5")
         tree_frm.pack(fill=tk.BOTH, expand=True, padx=12, pady=(10, 0))
 
-        cols = ("src", "artist", "album", "title", "dest")
+        cols = ("libready", "inlib", "src", "artist", "album", "title", "dest")
         self._tree = ttk.Treeview(
             tree_frm, columns=cols, show="headings", selectmode="browse",
         )
         headings = {
-            "src":    ("Source file",        200),
-            "artist": ("Artist",             130),
-            "album":  ("Album",              140),
-            "title":  ("Title",              140),
-            "dest":   ("→ Destination path", 300),
+            "libready": ("Lib Ready", 70),
+            "inlib":    ("In Lib",    55),
+            "src":      ("Source file",        200),
+            "artist":   ("Artist",             130),
+            "album":    ("Album",              140),
+            "title":    ("Title",              140),
+            "dest":     ("→ Destination path", 300),
         }
         for col, (label, width) in headings.items():
-            self._tree.heading(col, text=label, anchor=tk.W)
+            self._tree.heading(col, text=label, anchor=tk.CENTER if col in ("libready", "inlib") else tk.W)
             stretch = col in ("src", "dest")
-            self._tree.column(col, width=width, stretch=stretch, anchor=tk.W)
+            anchor  = tk.CENTER if col in ("libready", "inlib") else tk.W
+            self._tree.column(col, width=width, stretch=stretch, anchor=anchor)
 
         vsb = ttk.Scrollbar(tree_frm, orient=tk.VERTICAL,   command=self._tree.yview)
         hsb = ttk.Scrollbar(tree_frm, orient=tk.HORIZONTAL, command=self._tree.xview)
@@ -175,9 +254,10 @@ class SendToLibPanel(tk.Toplevel):
         hsb.pack(side=tk.BOTTOM, fill=tk.X)
         self._tree.pack(fill=tk.BOTH, expand=True)
 
-        self._tree.tag_configure("odd",  background="#ffffff")
-        self._tree.tag_configure("even", background="#f8f9fa")
-        self._tree.tag_configure("warn", background="#fff8e1", foreground="#856404")
+        self._tree.tag_configure("odd",      background="#ffffff")
+        self._tree.tag_configure("even",     background="#f8f9fa")
+        self._tree.tag_configure("warn",     background="#fff8e1", foreground="#856404")
+        self._tree.tag_configure("notready", background="#fde8e8", foreground="#922b21")
 
         # ── Status bar ── #
         self._status = tk.StringVar()
@@ -203,34 +283,50 @@ class SendToLibPanel(tk.Toplevel):
 
     def _populate(self):
         self._tree.delete(*self._tree.get_children())
-        missing_tags = 0
+        self._status.set("Checking tracks…")
+        self.update_idletasks()
 
+        md5_set, aat_set = _build_lib_index()
+
+        not_ready = 0
         for i, src in enumerate(self._paths):
             ext    = os.path.splitext(src)[1]
             fname  = os.path.basename(src)
             artist, album, title = _read_tags(src)
 
-            if not (artist and title):
-                missing_tags += 1
+            ready  = _check_lib_ready(src)
+            inlib  = _inlib_status(src, artist, title, album, md5_set, aat_set)
+
+            ready_icon = "✅" if ready else "❌"
+            if not ready:
+                not_ready += 1
 
             dest_full = compute_dest_full_path(
                 self._lib_root, self._partition, artist, album, title, ext
             )
 
-            row_tag = "warn" if not (artist and title) else ("odd" if i % 2 == 0 else "even")
+            if not ready:
+                row_tag = "notready"
+            elif not artist or not title:
+                row_tag = "warn"
+            else:
+                row_tag = "odd" if i % 2 == 0 else "even"
+
             self._tree.insert(
                 "", "end",
-                values=(fname, artist, album, title, dest_full),
+                values=(ready_icon, inlib, fname, artist, album, title, dest_full),
                 tags=(row_tag,),
             )
-            self._log.info(
-                f"Preview: {fname!r} → {dest_full}"
-            )
+            self._log.info(f"Preview: {fname!r} → {dest_full}")
 
         n = len(self._paths)
-        status = f"{n} file{'s' if n != 1 else ''} ready to send to {self._partition}."
-        if missing_tags:
-            status += f"  ⚠ {missing_tags} file(s) have missing artist/title tags (shown in amber)."
+        if not_ready:
+            status = (f"⛔  {not_ready} of {n} file(s) are NOT Lib Ready — "
+                      f"fix tags/cover art before sending.")
+            self._confirm_btn.configure(state="disabled")
+        else:
+            status = f"{n} file{'s' if n != 1 else ''} ready to send to {self._partition}."
+            self._confirm_btn.configure(state="normal")
         self._status.set(status)
 
     # ------------------------------------------------------------------ #
