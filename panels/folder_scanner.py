@@ -404,22 +404,18 @@ class ScanTab(tk.Frame):
         )
 
     def _send_to_lib(self, paths: list[str], partition: str):
+        import shutil
         from panels.database import upsert_track_info
+        from panels.send_to_lib_panel import compute_dest_full_path, compute_dest_rel_path
         from mutagen.flac import FLAC as _FLAC
 
         log = get_logger("send_to_lib")
         lib_root = self._settings.get("music_lib_paths", {}).get(partition, "")
         errors: list[str] = []
-        saved = 0
+        copied = 0
 
         for abs_path in paths:
-            norm_abs  = os.path.normcase(abs_path)
-            norm_root = os.path.normcase(lib_root).rstrip(os.sep) + os.sep if lib_root else ""
-            if norm_root and norm_abs.startswith(norm_root):
-                rel_path = abs_path[len(norm_root):]
-            else:
-                rel_path = os.path.basename(abs_path)
-
+            ext = os.path.splitext(abs_path)[1]
             artist = title = album = bitrate = ""
             try:
                 f = _FLAC(abs_path)
@@ -430,24 +426,36 @@ class ScanTab(tk.Frame):
             except Exception as exc:
                 log.warning(f"Tag read failed: {abs_path} — {exc}")
 
+            dest_full = compute_dest_full_path(lib_root, partition, artist, album, title, ext)
+            rel_path  = compute_dest_rel_path(artist, album, title, ext)
+
+            try:
+                os.makedirs(os.path.dirname(dest_full), exist_ok=True)
+                shutil.copy2(abs_path, dest_full)
+                log.info(f"Copied: {abs_path!r} → {dest_full!r}")
+            except Exception as exc:
+                log.error(f"File copy failed: {abs_path} — {exc}")
+                errors.append(f"{os.path.basename(abs_path)}: {exc}")
+                continue
+
             try:
                 upsert_track_info(partition, rel_path, artist, title, album, bitrate)
-                log.info(f"Saved to {partition}: {rel_path}")
-                saved += 1
+                log.info(f"DB saved: {partition}/{rel_path}")
+                copied += 1
             except Exception as exc:
                 log.error(f"DB write failed: {abs_path} — {exc}")
-                errors.append(f"{os.path.basename(abs_path)}: {exc}")
+                errors.append(f"{os.path.basename(abs_path)} (DB): {exc}")
 
         if errors:
             log.warning(f"Send to lib finished with {len(errors)} error(s): partition={partition}")
             messagebox.showerror(
                 "Send to Lib — errors",
-                f"{saved} saved, {len(errors)} failed:\n\n" + "\n".join(errors[:8]),
+                f"{copied} copied, {len(errors)} failed:\n\n" + "\n".join(errors[:8]),
             )
         else:
-            log.info(f"Send to lib complete: {saved} file(s) → {partition}")
+            log.info(f"Send to lib complete: {copied} file(s) → {partition}")
             self.status_var.set(
-                f"✔  Sent {saved} file{'s' if saved != 1 else ''} → {partition}"
+                f"✔  Sent {copied} file{'s' if copied != 1 else ''} → {partition}"
             )
 
     def _on_row_select(self, event):
