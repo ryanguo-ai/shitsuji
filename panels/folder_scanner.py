@@ -10,7 +10,7 @@ from datetime import datetime
 from mutagen.flac import FLAC
 
 from panels.audio_details_panel import AudioDetailsPanel
-from panels.settings_panel import load_settings
+from panels.settings_panel import load_settings, save_settings
 
 AUDIO_EXTENSIONS = {
     "FLAC", "MP3", "AAC", "OGG", "OPUS", "WAV", "AIFF", "APE",
@@ -156,6 +156,9 @@ class ScanTab(tk.Frame):
         self._detail_panel = AudioDetailsPanel(self._paned)
         self._paned.add(self._detail_panel, stretch="never", minsize=240)
 
+        self._paned.bind("<ButtonRelease-1>", self._on_sash_release)
+        self.after(150, self._restore_sash)
+
         # ── Bottom status bar ─────────────────────────────────────────── #
         bar = tk.Frame(self, bg="#bdc3c7", height=24)
         bar.pack(fill=tk.X, side=tk.BOTTOM)
@@ -165,6 +168,26 @@ class ScanTab(tk.Frame):
             font=("Segoe UI", 9), bg="#bdc3c7",
             anchor="w", padx=8,
         ).pack(fill=tk.X)
+
+    # ------------------------------------------------------------------ #
+    # Layout persistence                                                   #
+    # ------------------------------------------------------------------ #
+
+    def _on_sash_release(self, _event):
+        try:
+            x, _ = self._paned.sash_coord(0)
+            self._settings["scan_sash"] = x
+            save_settings(self._settings)
+        except Exception:
+            pass
+
+    def _restore_sash(self):
+        x = self._settings.get("scan_sash")
+        if x is not None:
+            try:
+                self._paned.sash_place(0, int(x), 0)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ #
     # Actions                                                              #

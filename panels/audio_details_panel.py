@@ -10,6 +10,18 @@ from tkinter import ttk, messagebox
 from mutagen.flac import FLAC
 from PIL import Image, ImageTk
 
+# FLAC picture type IDs
+_PIC_FRONT = 3
+_PIC_BACK = 4
+
+
+def _fmt_size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GB"
+
 
 class AudioDetailsPanel(tk.Frame):
 
@@ -38,7 +50,23 @@ class AudioDetailsPanel(tk.Frame):
             self, bg="#f0f0f0",
             text="No cover art", font=("Segoe UI", 9, "italic"), fg="#7f8c8d",
         )
-        self._cover_label.pack(pady=(12, 8))
+        self._cover_label.pack(pady=(12, 4))
+
+        # Image count / dimension / size info
+        img_info_frame = tk.Frame(self, bg="#f0f0f0")
+        img_info_frame.pack(pady=(0, 6))
+
+        self._img_count_var = tk.StringVar()
+        self._img_dims_var = tk.StringVar()
+
+        tk.Label(
+            img_info_frame, textvariable=self._img_count_var,
+            font=("Segoe UI", 8), fg="#7f8c8d", bg="#f0f0f0",
+        ).pack()
+        tk.Label(
+            img_info_frame, textvariable=self._img_dims_var,
+            font=("Segoe UI", 8), fg="#7f8c8d", bg="#f0f0f0",
+        ).pack()
 
         ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X)
 
@@ -173,6 +201,32 @@ class AudioDetailsPanel(tk.Frame):
         else:
             self._cover_label.configure(image="", text="No cover art")
 
+        # Image info
+        total = len(pictures)
+        front = sum(1 for p in pictures if p.type == _PIC_FRONT)
+        back  = sum(1 for p in pictures if p.type == _PIC_BACK)
+        other = total - front - back
+
+        parts = []
+        if front: parts.append(f"{front} front")
+        if back:  parts.append(f"{back} back")
+        if other: parts.append(f"{other} other")
+        count_str = f"{total} image{'s' if total != 1 else ''}"
+        if parts:
+            count_str += f"  ·  {'  ·  '.join(parts)}"
+        self._img_count_var.set(count_str)
+
+        if cover_pic:
+            try:
+                orig = Image.open(io.BytesIO(cover_pic.data))
+                w, h = orig.size
+                sz = _fmt_size(len(cover_pic.data))
+                self._img_dims_var.set(f"{w} × {h} px  ·  {sz}")
+            except Exception:
+                self._img_dims_var.set("")
+        else:
+            self._img_dims_var.set("")
+
         # Tags
         tags = flac.tags or {}
         for key, values in sorted(tags.items()):
@@ -186,4 +240,6 @@ class AudioDetailsPanel(tk.Frame):
         self._save_btn.configure(state="disabled")
         self._cover_label.configure(image="", text="No cover art")
         self._cover_photo = None
+        self._img_count_var.set("")
+        self._img_dims_var.set("")
         self._tag_tree.delete(*self._tag_tree.get_children())

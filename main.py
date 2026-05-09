@@ -18,18 +18,23 @@ class App(tk.Tk):
         init_db()
         self._settings = load_settings()
         self.title("Shitsuji")
-
-        screen_w = self.winfo_screenwidth()
-        screen_h = self.winfo_screenheight()
-        if screen_w > 0 and screen_h > 0:
-            win_w, win_h = screen_w // 2, screen_h // 2
-        else:
-            screen_w, screen_h = 1280, 720
-            win_w, win_h = 640, 360
-        x = (screen_w - win_w) // 2
-        y = (screen_h - win_h) // 2
-        self.geometry(f"{win_w}x{win_h}+{x}+{y}")
         self.minsize(700, 450)
+
+        # Apply saved geometry, or default to centred half-screen
+        saved_geom = self._settings.get("window_geometry")
+        if saved_geom:
+            self.geometry(saved_geom)
+        else:
+            screen_w = self.winfo_screenwidth()
+            screen_h = self.winfo_screenheight()
+            if screen_w <= 0 or screen_h <= 0:
+                screen_w, screen_h = 1280, 720
+            win_w, win_h = screen_w // 2, screen_h // 2
+            x = (screen_w - win_w) // 2
+            y = (screen_h - win_h) // 2
+            self.geometry(f"{win_w}x{win_h}+{x}+{y}")
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._build_toolbar()
 
@@ -75,6 +80,11 @@ class App(tk.Tk):
     def _on_settings_saved(self, updated: dict):
         self._settings.update(updated)
         self._scan_tab._settings.update(updated)
+
+    def _on_close(self):
+        self._settings["window_geometry"] = self.geometry()
+        save_settings(self._settings)
+        self.destroy()
 
     # ------------------------------------------------------------------ #
     # Tab persistence                                                      #
