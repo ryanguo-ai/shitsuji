@@ -29,9 +29,10 @@ class AudioDetailsPanel(tk.Frame):
 
     def __init__(self, master):
         super().__init__(master, bg="#f0f0f0", width=280)
-        self._cover_photo = None  # keep reference to avoid GC
+        self._cover_photo = None
         self._current_path: str | None = None
         self._dirty = False
+        self._deleted_items: set = set()   # item IDs marked for deletion
         self._build()
 
     # ------------------------------------------------------------------ #
@@ -78,12 +79,16 @@ class AudioDetailsPanel(tk.Frame):
 
         self._tag_tree = ttk.Treeview(
             tag_frame, columns=("tag", "value"), show="headings",
-            selectmode="browse",
+            selectmode="extended",
         )
         self._tag_tree.heading("tag", text="Tag", anchor=tk.W)
         self._tag_tree.heading("value", text="Value", anchor=tk.W)
         self._tag_tree.column("tag", width=90, stretch=False)
         self._tag_tree.column("value", width=160, stretch=True)
+
+        self._tag_tree.tag_configure("deleted",
+            background="#fde8e8", foreground="#aaaaaa",
+        )
 
         tag_vsb = ttk.Scrollbar(tag_frame, orient=tk.VERTICAL, command=self._tag_tree.yview)
         self._tag_tree.configure(yscrollcommand=tag_vsb.set)
@@ -91,6 +96,7 @@ class AudioDetailsPanel(tk.Frame):
         self._tag_tree.pack(fill=tk.BOTH, expand=True)
 
         self._tag_tree.bind("<Double-1>", self._start_edit)
+        self._tag_tree.bind("<Delete>",   self._mark_deleted)
 
         # Save button
         btn_frame = tk.Frame(self, bg="#f0f0f0")
@@ -154,6 +160,19 @@ class AudioDetailsPanel(tk.Frame):
         entry.bind("<Escape>", cancel)
         entry.bind("<FocusOut>", commit)
 
+    def _mark_deleted(self, _event=None):
+        """Mark selected tag rows for deletion (red/grey). Actual removal on Save."""
+        for item in self._tag_tree.selection():
+            if item in self._deleted_items:
+                # Toggle off — restore row
+                self._deleted_items.discard(item)
+                self._tag_tree.item(item, tags=())
+            else:
+                self._deleted_items.add(item)
+                self._tag_tree.item(item, tags=("deleted",))
+        if self._deleted_items:
+            self._mark_dirty()
+
     def _open_lyrics(self, item):
         lyrics = self._tag_tree.item(item, "values")[1]
 
@@ -183,10 +202,16 @@ class AudioDetailsPanel(tk.Frame):
             flac = FLAC(self._current_path)
             flac.tags.clear()
             for iid in self._tag_tree.get_children():
+                if iid in self._deleted_items:
+                    continue          # skip tags marked for deletion
                 key, val = self._tag_tree.item(iid, "values")
                 if key:
                     flac[key.lower()] = [val]
             flac.save()
+            # Remove the deleted rows from the tree now that save succeeded
+            for iid in self._deleted_items:
+                self._tag_tree.delete(iid)
+            self._deleted_items.clear()
             self._dirty = False
             self._save_btn.configure(state="disabled")
         except Exception as exc:
@@ -258,6 +283,7 @@ class AudioDetailsPanel(tk.Frame):
         """Reset the panel to its empty state."""
         self._current_path = None
         self._dirty = False
+        self._deleted_items.clear()
         self._save_btn.configure(state="disabled")
         self._cover_label.configure(image="", text="No cover art")
         self._cover_photo = None

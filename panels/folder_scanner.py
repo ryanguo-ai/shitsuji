@@ -168,10 +168,11 @@ class ScanTab(tk.Frame):
         hsb.pack(side=tk.BOTTOM, fill=tk.X)
         self.tree.pack(fill=tk.BOTH, expand=True)
 
-        self.tree.tag_configure("odd",    background="#ffffff")
-        self.tree.tag_configure("even",   background="#ecf0f1")
-        self.tree.tag_configure("inlib",  background="#eafaf1", foreground="#1e8449")
-        self.tree.tag_configure("notlib", background="#fdf2f8", foreground="#922b21")
+        self.tree.tag_configure("odd",         background="#ffffff")
+        self.tree.tag_configure("even",        background="#ecf0f1")
+        self.tree.tag_configure("inlib_exact", background="#eafaf1", foreground="#1e8449")  # green  — MD5 match
+        self.tree.tag_configure("inlib_diff",  background="#fefce8", foreground="#92400e")  # amber  — metadata match, different file
+        self.tree.tag_configure("notlib",      background="#fdf2f8", foreground="#922b21")
         self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
         self.tree.bind("<Button-3>", self._on_row_right_click)
         self.tree.bind("<Delete>", self._on_delete_key)
@@ -245,42 +246,26 @@ class ScanTab(tk.Frame):
         self.footer_var.set(f"Scan complete — {total} file{'s' if total != 1 else ''} found.")
 
     def _check_tracks(self):
-        """Refresh the In Lib column for every row in the table."""
-        from panels.database import get_track_info
-
-        items = self.tree.get_children()
-        if not items:
-            self.status_var.set("No tracks to check.")
-            return
-
-        self.status_var.set("Checking library…")
-        self.update_idletasks()
-
-        # Build a lookup set: (artist_lower, title_lower, album_lower)
-        lib_set: set[tuple[str, str, str]] = set()
-        for row in get_track_info():
-            lib_set.add((
-                (row["artist"] or "").strip().lower(),
-                (row["title"]  or "").strip().lower(),
-                (row["album"]  or "").strip().lower(),
-            ))
-
-    def _check_tracks(self):
         """Refresh Lib Ready and In Lib columns for every row in the table."""
-        from panels.database import get_track_info
+        from panels.database import get_track_info, compute_file_md5
 
         items = self.tree.get_children()
         if not items:
             self.status_var.set("No tracks to check.")
             return
 
-        self.status_var.set("Checking library…")
+        self.status_var.set("Loading library index…")
         self.update_idletasks()
 
-        # Build a lookup set: (artist_lower, title_lower, album_lower)
-        lib_set: set[tuple[str, str, str]] = set()
+        # Build two lookup structures from DB (single query):
+        #   md5_set  — set of md5 digests present in lib (exact-match detection)
+        #   aat_set  — set of (artist, title, album) tuples (metadata-match detection)
+        md5_set: set[str]              = set()
+        aat_set: set[tuple[str,str,str]] = set()
         for row in get_track_info():
-            lib_set.add((
+            if row["file_md5"]:
+                md5_set.add(row["file_md5"].strip().lower())
+            aat_set.add((
                 (row["artist"] or "").strip().lower(),
                 (row["title"]  or "").strip().lower(),
                 (row["album"]  or "").strip().lower(),
@@ -301,19 +286,29 @@ class ScanTab(tk.Frame):
             if is_ready:
                 ready += 1
 
-            # ── In Lib ── #
-            matched = bool(artist and title) and any(
-                a == artist and t == title and (not album or al == album)
-                for a, t, al in lib_set
-            )
-            vals[1] = "🟢" if matched else "🔴"
-            if matched:
-                found += 1
+            # ── In Lib — MD5-based matching ── #
+            try:
+                file_md5 = compute_file_md5(full_path).lower()
+            except Exception:
+                file_md5 = ""
 
-            row_tag = "inlib" if matched else ("odd" if i % 2 == 0 else "even")
+            if file_md5 and file_md5 in md5_set:
+                # Exact duplicate — same bytes already in lib
+                vals[1]  = "🟢"
+                row_tag  = "inlib_exact"
+                found   += 1
+            elif bool(artist and title) and (artist, title, album) in aat_set:
+                # Metadata match but different file content (e.g. re-encode/remaster)
+                vals[1] = "🟡"
+                row_tag = "inlib_diff"
+                found  += 1
+            else:
+                # Not in lib at all
+                vals[1] = "⬛"
+                row_tag = "odd" if i % 2 == 0 else "even"
+
             self.tree.item(item, values=vals, tags=(row_tag,))
 
-            # Update status periodically
             if (i + 1) % 10 == 0:
                 self.status_var.set(f"Checking… {i + 1}/{total}")
                 self.update_idletasks()
