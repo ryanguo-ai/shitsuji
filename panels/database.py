@@ -43,6 +43,7 @@ _DDL = """
         artist       TEXT,
         title        TEXT,
         album        TEXT,
+        bitrate      TEXT,
         updated_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
 
         UNIQUE (partition, rel_path)
@@ -59,6 +60,10 @@ def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with _connect() as conn:
         conn.executescript(_DDL)
+        # Migration: add bitrate to track_info if upgrading from older schema
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(track_info)")}
+        if "bitrate" not in cols:
+            conn.execute("ALTER TABLE track_info ADD COLUMN bitrate TEXT")
 
 
 @contextmanager
@@ -143,20 +148,22 @@ def upsert_track_info(
     artist: str = "",
     title: str = "",
     album: str = "",
+    bitrate: str = "",
 ) -> None:
     """Insert or update a track_info record identified by (partition, rel_path)."""
     with _connect() as conn:
         conn.execute(
             """
-            INSERT INTO track_info (partition, rel_path, artist, title, album, updated_at)
-            VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%S', 'now'))
+            INSERT INTO track_info (partition, rel_path, artist, title, album, bitrate, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%S', 'now'))
             ON CONFLICT(partition, rel_path) DO UPDATE SET
                 artist     = excluded.artist,
                 title      = excluded.title,
                 album      = excluded.album,
+                bitrate    = excluded.bitrate,
                 updated_at = excluded.updated_at
             """,
-            (partition, rel_path, artist, title, album),
+            (partition, rel_path, artist, title, album, bitrate),
         )
 
 

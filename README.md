@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS track_info (
     artist       TEXT,                     -- e.g. "Cyndi Lauper"
     title        TEXT,                     -- e.g. "Girls Just Want to Have Fun"
     album        TEXT,                     -- e.g. "She's So Unusual"
+    bitrate      TEXT,                     -- e.g. "1411 kbps"
     updated_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
 
     UNIQUE (partition, rel_path)
