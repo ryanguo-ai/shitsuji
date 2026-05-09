@@ -325,7 +325,7 @@ class FolderScannerApp(tk.Tk):
                     modified = "—"
 
                 ext = os.path.splitext(name)[1].lstrip(".").upper()
-                file_type = f"{ext} File" if ext else "File"
+                file_type = ext if ext else "File"
 
                 artist, title, bitrate = _read_flac_tags(full_path) if ext == "FLAC" else ("", "", "")
 
@@ -444,7 +444,7 @@ class FolderScannerApp(tk.Tk):
         if not values:
             return
         full_path, file_type = values[0], values[1]
-        if file_type == "FLAC File":
+        if file_type == "FLAC":
             self._show_flac_details(full_path)
         else:
             self._clear_detail_panel()
