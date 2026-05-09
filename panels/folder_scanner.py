@@ -440,6 +440,10 @@ class ScanTab(tk.Frame):
                 label=f"🏷  Edit Tags",
                 command=lambda: self._edit_tags(flac_paths),
             )
+            menu.add_command(
+                label="🎨  Find Cover Art",
+                command=lambda: self._find_cover_art(flac_paths),
+            )
 
         if audio_paths or flac_paths:
             menu.add_separator()
@@ -517,6 +521,10 @@ class ScanTab(tk.Frame):
     def _edit_tags(self, paths: list[str]):
         from panels.edit_tags_panel import EditTagsPanel
         EditTagsPanel(self.winfo_toplevel(), paths)
+
+    def _find_cover_art(self, paths: list[str]):
+        from panels.cover_art_panel import CoverArtPanel
+        CoverArtPanel(self.winfo_toplevel(), paths, self._settings)
 
     def _copy_paths(self, paths: list[str]):
         self.clipboard_clear()

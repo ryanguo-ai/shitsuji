@@ -98,7 +98,7 @@ class AudioDetailsPanel(tk.Frame):
         self._tag_tree.bind("<Double-1>", self._start_edit)
         self._tag_tree.bind("<Delete>",   self._mark_deleted)
 
-        # Save button
+        # Save / Copy buttons
         btn_frame = tk.Frame(self, bg="#f0f0f0")
         btn_frame.pack(fill=tk.X, padx=4, pady=4)
         self._save_btn = ttk.Button(
@@ -106,6 +106,10 @@ class AudioDetailsPanel(tk.Frame):
             command=self._save_tags, state="disabled",
         )
         self._save_btn.pack(side=tk.RIGHT)
+        ttk.Button(
+            btn_frame, text="Copy JSON",
+            command=self._copy_tags_json,
+        ).pack(side=tk.RIGHT, padx=(0, 4))
 
     # ------------------------------------------------------------------ #
     # Inline editing                                                       #
@@ -186,6 +190,19 @@ class AudioDetailsPanel(tk.Frame):
             lyrics,
             on_save=on_save,
         )
+
+    def _copy_tags_json(self):
+        """Copy selected tag rows (or all if none selected) as JSON to clipboard."""
+        import json
+        selected = self._tag_tree.selection()
+        items = selected if selected else self._tag_tree.get_children()
+        data = {
+            self._tag_tree.item(iid, "values")[0]: self._tag_tree.item(iid, "values")[1]
+            for iid in items
+            if iid not in self._deleted_items
+        }
+        self.clipboard_clear()
+        self.clipboard_append(json.dumps(data, ensure_ascii=False, indent=2))
 
     def _mark_dirty(self):
         self._dirty = True
