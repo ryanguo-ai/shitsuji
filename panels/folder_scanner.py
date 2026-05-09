@@ -28,18 +28,43 @@ def format_size(size_bytes: int) -> str:
     return f"{size_bytes:.1f} PB"
 
 
-def _read_flac_tags(file_path: str) -> tuple[str, str, str]:
-    """Return (artist, title, bitrate) from a FLAC file's tags/info, or ('', '', '') on failure."""
+def _read_flac_tags(file_path: str) -> tuple[str, str, str, str]:
+    """Return (artist, title, album, bitrate) from a FLAC file's tags/info, or ('','','','') on failure."""
     try:
         flac = FLAC(file_path)
         tags = flac.tags or {}
-        artist = tags.get("artist", [""])[0]
-        title = tags.get("title", [""])[0]
+        artist  = tags.get("artist",  [""])[0]
+        title   = tags.get("title",   [""])[0]
+        album   = tags.get("album",   [""])[0]
         bitrate = f"{round(flac.info.bitrate / 1000)} kbps" if flac.info.bitrate else ""
-        return artist, title, bitrate
+        return artist, title, album, bitrate
     except Exception:
-        return "", "", ""
+        return "", "", "", ""
 
+
+def _check_lib_ready(file_path: str) -> bool:
+    """
+    Return True if the file meets lib-ready criteria:
+      1. Has non-empty ARTIST, TITLE and ALBUM tags
+      2. Has at least one embedded image with both dimensions > 320 px
+    """
+    try:
+        from PIL import Image
+        import io
+        flac = FLAC(file_path)
+        tags = flac.tags or {}
+        if not (tags.get("artist", [""])[0] and
+                tags.get("title",  [""])[0] and
+                tags.get("album",  [""])[0]):
+            return False
+        for pic in flac.pictures:
+            img = Image.open(io.BytesIO(pic.data))
+            w, h = img.size
+            if w > 320 and h > 320:
+                return True
+        return False
+    except Exception:
+        return False
 
 class ScanTab(tk.Frame):
 
@@ -106,29 +131,33 @@ class ScanTab(tk.Frame):
         tree_frame = tk.Frame(self._paned, bg="#f5f5f5")
         self._paned.add(tree_frame, stretch="always", minsize=400)
 
-        columns = ("finlib", "fpath", "ftype", "fartist", "ftitle", "fbitrate", "fsize", "fmodified")
+        columns = ("flibready", "finlib", "fpath", "ftype", "fartist", "ftitle", "falbum", "fbitrate", "fsize", "fmodified")
         self.tree = ttk.Treeview(
             tree_frame, columns=columns, show="headings",
             selectmode="extended",
         )
 
-        self.tree.heading("finlib",    text="In Lib",    anchor=tk.CENTER)
-        self.tree.heading("fpath",     text="Full Path", anchor=tk.W)
-        self.tree.heading("ftype",     text="Type",      anchor=tk.W)
-        self.tree.heading("fartist",   text="Artist",    anchor=tk.W)
-        self.tree.heading("ftitle",    text="Title",     anchor=tk.W)
-        self.tree.heading("fbitrate",  text="Bitrate",   anchor=tk.E)
-        self.tree.heading("fsize",     text="Size",      anchor=tk.E)
-        self.tree.heading("fmodified", text="Modified",  anchor=tk.W)
+        self.tree.heading("flibready",  text="Lib Ready",  anchor=tk.CENTER)
+        self.tree.heading("finlib",     text="In Lib",     anchor=tk.CENTER)
+        self.tree.heading("fpath",      text="Full Path",  anchor=tk.W)
+        self.tree.heading("ftype",      text="Type",       anchor=tk.W)
+        self.tree.heading("fartist",    text="Artist",     anchor=tk.W)
+        self.tree.heading("ftitle",     text="Title",      anchor=tk.W)
+        self.tree.heading("falbum",     text="Album",      anchor=tk.W)
+        self.tree.heading("fbitrate",   text="Bitrate",    anchor=tk.E)
+        self.tree.heading("fsize",      text="Size",       anchor=tk.E)
+        self.tree.heading("fmodified",  text="Modified",   anchor=tk.W)
 
-        self.tree.column("finlib",    width=55,  anchor=tk.CENTER, stretch=False)
-        self.tree.column("fpath",     width=300, stretch=True)
-        self.tree.column("ftype",     width=60,  stretch=False)
-        self.tree.column("fartist",   width=150, stretch=False)
-        self.tree.column("ftitle",    width=190, stretch=False)
-        self.tree.column("fbitrate",  width=80,  anchor=tk.E, stretch=False)
-        self.tree.column("fsize",     width=70,  anchor=tk.E, stretch=False)
-        self.tree.column("fmodified", width=130, stretch=False)
+        self.tree.column("flibready",  width=70,  anchor=tk.CENTER, stretch=False)
+        self.tree.column("finlib",     width=55,  anchor=tk.CENTER, stretch=False)
+        self.tree.column("fpath",      width=270, stretch=True)
+        self.tree.column("ftype",      width=55,  stretch=False)
+        self.tree.column("fartist",    width=140, stretch=False)
+        self.tree.column("ftitle",     width=170, stretch=False)
+        self.tree.column("falbum",     width=155, stretch=False)
+        self.tree.column("fbitrate",   width=75,  anchor=tk.E, stretch=False)
+        self.tree.column("fsize",      width=65,  anchor=tk.E, stretch=False)
+        self.tree.column("fmodified",  width=125, stretch=False)
 
         # Scrollbars
         vsb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
@@ -143,7 +172,6 @@ class ScanTab(tk.Frame):
         self.tree.tag_configure("even",   background="#ecf0f1")
         self.tree.tag_configure("inlib",  background="#eafaf1", foreground="#1e8449")
         self.tree.tag_configure("notlib", background="#fdf2f8", foreground="#922b21")
-
         self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
         self.tree.bind("<Button-3>", self._on_row_right_click)
         self.tree.bind("<Delete>", self._on_delete_key)
@@ -237,30 +265,68 @@ class ScanTab(tk.Frame):
                 (row["album"]  or "").strip().lower(),
             ))
 
-        found = 0
-        for i, item in enumerate(items):
-            vals   = list(self.tree.item(item, "values"))
-            artist = (vals[3] or "").strip().lower()
-            title  = (vals[4] or "").strip().lower()
-            matched = bool(artist and title) and any(
-                a == artist and t == title
-                for a, t, _ in lib_set
-            )
-            if matched:
-                vals[0] = "🟢"
-                self.tree.item(item, values=vals, tags=("inlib",))
-                found += 1
-            else:
-                vals[0] = "🔴"
-                plain = "odd" if i % 2 == 0 else "even"
-                self.tree.item(item, values=vals, tags=(plain,))
+    def _check_tracks(self):
+        """Refresh Lib Ready and In Lib columns for every row in the table."""
+        from panels.database import get_track_info
 
+        items = self.tree.get_children()
+        if not items:
+            self.status_var.set("No tracks to check.")
+            return
+
+        self.status_var.set("Checking library…")
+        self.update_idletasks()
+
+        # Build a lookup set: (artist_lower, title_lower, album_lower)
+        lib_set: set[tuple[str, str, str]] = set()
+        for row in get_track_info():
+            lib_set.add((
+                (row["artist"] or "").strip().lower(),
+                (row["title"]  or "").strip().lower(),
+                (row["album"]  or "").strip().lower(),
+            ))
+
+        found = ready = 0
         total = len(items)
+        for i, item in enumerate(items):
+            vals      = list(self.tree.item(item, "values"))
+            full_path = vals[2]
+            artist    = (vals[4] or "").strip().lower()
+            title     = (vals[5] or "").strip().lower()
+            album     = (vals[6] or "").strip().lower()
+
+            # ── Lib Ready ── #
+            is_ready = _check_lib_ready(full_path)
+            vals[0]  = "✅" if is_ready else "❌"
+            if is_ready:
+                ready += 1
+
+            # ── In Lib ── #
+            matched = bool(artist and title) and any(
+                a == artist and t == title and (not album or al == album)
+                for a, t, al in lib_set
+            )
+            vals[1] = "🟢" if matched else "🔴"
+            if matched:
+                found += 1
+
+            row_tag = "inlib" if matched else ("odd" if i % 2 == 0 else "even")
+            self.tree.item(item, values=vals, tags=(row_tag,))
+
+            # Update status periodically
+            if (i + 1) % 10 == 0:
+                self.status_var.set(f"Checking… {i + 1}/{total}")
+                self.update_idletasks()
+
         self.status_var.set(
-            f"Check complete — {found} of {total} track{'s' if total != 1 else ''} found in lib."
+            f"Check complete — {ready}/{total} lib-ready · {found}/{total} in lib."
         )
 
+    # ------------------------------------------------------------------ #
+    # List population                                                      #
+    # ------------------------------------------------------------------ #
 
+    def _populate_list(self, folder, show_hidden, recursive):
         """Walk the folder and insert every file as a flat row."""
         walker = os.walk(folder) if recursive else self._single_level(folder)
 
@@ -283,12 +349,12 @@ class ScanTab(tk.Frame):
 
         ext       = os.path.splitext(full_path)[1].lstrip(".").upper()
         file_type = ext if ext else "File"
-        artist, title, bitrate = _read_flac_tags(full_path) if ext == "FLAC" else ("", "", "")
+        artist, title, album, bitrate = _read_flac_tags(full_path) if ext == "FLAC" else ("", "", "", "")
 
         tag = "odd" if len(self.tree.get_children()) % 2 == 0 else "even"
         self.tree.insert(
             "", "end",
-            values=("", full_path, file_type, artist, title, bitrate, size, modified),
+            values=("", "", full_path, file_type, artist, title, album, bitrate, size, modified),
             tags=(tag,),
         )
 
@@ -353,7 +419,7 @@ class ScanTab(tk.Frame):
             self.tree.selection_set(item)
 
         selected = self.tree.selection()
-        paths = [self.tree.item(i, "values")[1] for i in selected]
+        paths = [self.tree.item(i, "values")[2] for i in selected]
         audio_paths = [
             p for p in paths
             if os.path.splitext(p)[1].lstrip(".").upper() in AUDIO_EXTENSIONS
@@ -492,7 +558,7 @@ class ScanTab(tk.Frame):
         values = self.tree.item(selected[0], "values")
         if not values:
             return
-        full_path, file_type = values[1], values[2]
+        full_path, file_type = values[2], values[3]
         if file_type == "FLAC":
             self._detail_panel.show_flac(full_path)
         else:
