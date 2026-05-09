@@ -2,16 +2,15 @@
 Folder Scanner UI — browse and list all files in a selected directory.
 """
 
-import io
 import json
 import os
-import pathlib
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
 
 from mutagen.flac import FLAC
-from PIL import Image, ImageTk
+
+from panels.audio_details_panel import AudioDetailsPanel
 
 AUDIO_EXTENSIONS = {
     "FLAC", "MP3", "AAC", "OGG", "OPUS", "WAV", "AIFF", "APE",
@@ -165,7 +164,8 @@ class ScanTab(tk.Frame):
         self.tree.bind("<Button-3>", self._on_row_right_click)
 
         # ── Right: detail panel ───────────────────────────────────────── #
-        self._build_detail_panel()
+        self._detail_panel = AudioDetailsPanel(self._paned)
+        self._paned.add(self._detail_panel, stretch="never", minsize=240)
 
         # ── Bottom status bar ─────────────────────────────────────────── #
         bar = tk.Frame(self, bg="#bdc3c7", height=24)
@@ -376,51 +376,6 @@ class ScanTab(tk.Frame):
         self.clipboard_clear()
         self.clipboard_append(path)
 
-    # ------------------------------------------------------------------ #
-    # Detail panel                                                        #
-    # ------------------------------------------------------------------ #
-
-    def _build_detail_panel(self):
-        detail_frame = tk.Frame(self._paned, bg="#f0f0f0", width=280)
-        self._paned.add(detail_frame, stretch="never", minsize=240)
-
-        tk.Label(
-            detail_frame, text="File Details",
-            font=("Segoe UI", 11, "bold"),
-            bg="#f0f0f0", fg="#2c3e50", anchor="w", padx=10, pady=8,
-        ).pack(fill=tk.X)
-
-        ttk.Separator(detail_frame, orient=tk.HORIZONTAL).pack(fill=tk.X)
-
-        # Cover art
-        self._cover_label = tk.Label(
-            detail_frame, bg="#f0f0f0",
-            text="No cover art", font=("Segoe UI", 9, "italic"), fg="#7f8c8d",
-        )
-        self._cover_label.pack(pady=(12, 8))
-
-        ttk.Separator(detail_frame, orient=tk.HORIZONTAL).pack(fill=tk.X)
-
-        # Tags table
-        tag_frame = tk.Frame(detail_frame, bg="#f0f0f0")
-        tag_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
-
-        self._tag_tree = ttk.Treeview(
-            tag_frame, columns=("tag", "value"), show="headings",
-            selectmode="none",
-        )
-        self._tag_tree.heading("tag", text="Tag", anchor=tk.W)
-        self._tag_tree.heading("value", text="Value", anchor=tk.W)
-        self._tag_tree.column("tag", width=90, stretch=False)
-        self._tag_tree.column("value", width=160, stretch=True)
-
-        tag_vsb = ttk.Scrollbar(tag_frame, orient=tk.VERTICAL, command=self._tag_tree.yview)
-        self._tag_tree.configure(yscrollcommand=tag_vsb.set)
-        tag_vsb.pack(side=tk.RIGHT, fill=tk.Y)
-        self._tag_tree.pack(fill=tk.BOTH, expand=True)
-
-        self._cover_photo = None  # keep reference to avoid GC
-
     def _on_row_select(self, event):
         selected = self.tree.selection()
         if not selected:
@@ -430,90 +385,6 @@ class ScanTab(tk.Frame):
             return
         full_path, file_type = values[0], values[1]
         if file_type == "FLAC":
-            self._show_flac_details(full_path)
+            self._detail_panel.show_flac(full_path)
         else:
-            self._clear_detail_panel()
-
-    def _show_flac_details(self, path: str):
-        self._clear_detail_panel()
-        try:
-            flac = FLAC(path)
-        except Exception:
-            return
-
-        # Cover art
-        pictures = flac.pictures
-        cover_pic = next(
-            (p for p in pictures if p.type == 3),  # type 3 = Front Cover
-            pictures[0] if pictures else None,
-        )
-        if cover_pic:
-            try:
-                img = Image.open(io.BytesIO(cover_pic.data))
-                img.thumbnail((240, 240), Image.LANCZOS)
-                self._cover_photo = ImageTk.PhotoImage(img)
-                self._cover_label.configure(image=self._cover_photo, text="")
-            except Exception:
-                self._cover_label.configure(image="", text="(cover unreadable)")
-        else:
-            self._cover_label.configure(image="", text="No cover art")
-
-        # Tags
-        tags = flac.tags or {}
-        for key, values in sorted(tags.items()):
-            display_val = " / ".join(values) if isinstance(values, list) else values
-            self._tag_tree.insert("", "end", values=(key.upper(), display_val))
-
-    def _clear_detail_panel(self):
-        self._cover_label.configure(image="", text="No cover art")
-        self._cover_photo = None
-        self._tag_tree.delete(*self._tag_tree.get_children())
-
-
-# ------------------------------------------------------------------ #
-# Search tab (placeholder)                                            #
-# ------------------------------------------------------------------ #
-
-class SearchTab(tk.Frame):
-
-    def __init__(self, master):
-        super().__init__(master, bg="#f5f5f5")
-        tk.Label(
-            self, text="🔍  Search",
-            font=("Segoe UI", 14, "bold"),
-            fg="#2c3e50", bg="#f5f5f5",
-        ).pack(expand=True)
-
-
-# ------------------------------------------------------------------ #
-# Application root                                                    #
-# ------------------------------------------------------------------ #
-
-class App(tk.Tk):
-
-    def __init__(self):
-        super().__init__()
-        self.title("Shitsuji")
-
-        screen_w = self.winfo_screenwidth()
-        screen_h = self.winfo_screenheight()
-        if screen_w > 0 and screen_h > 0:
-            win_w, win_h = screen_w // 2, screen_h // 2
-        else:
-            screen_w, screen_h = 1280, 720
-            win_w, win_h = 640, 360
-        x = (screen_w - win_w) // 2
-        y = (screen_h - win_h) // 2
-        self.geometry(f"{win_w}x{win_h}+{x}+{y}")
-        self.minsize(700, 450)
-
-        notebook = ttk.Notebook(self)
-        notebook.pack(fill=tk.BOTH, expand=True)
-
-        notebook.add(SearchTab(notebook), text="  Search  ")
-        notebook.add(ScanTab(notebook), text="  Scan  ")
-
-
-if __name__ == "__main__":
-    app = App()
-    app.mainloop()
+            self._detail_panel.clear()
