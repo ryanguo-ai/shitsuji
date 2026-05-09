@@ -360,7 +360,7 @@ class ScanTab(tk.Frame):
         for partition in MUSIC_LIB_PARTITIONS:
             lib_menu.add_command(
                 label=partition,
-                command=lambda p=partition: self._send_to_lib(paths, p),
+                command=lambda p=partition: self._open_send_to_lib(paths, p),
             )
         menu.add_cascade(label="📂  Send to Lib ▶", menu=lib_menu)
         menu.add_separator()
@@ -391,6 +391,17 @@ class ScanTab(tk.Frame):
     def _copy_paths(self, paths: list[str]):
         self.clipboard_clear()
         self.clipboard_append("\n".join(paths))
+
+    def _open_send_to_lib(self, paths: list[str], partition: str):
+        from panels.send_to_lib_panel import SendToLibPanel
+        lib_root = self._settings.get("music_lib_paths", {}).get(partition, "")
+        SendToLibPanel(
+            self.winfo_toplevel(),
+            paths,
+            partition,
+            lib_root,
+            on_confirm=self._send_to_lib,
+        )
 
     def _send_to_lib(self, paths: list[str], partition: str):
         from panels.database import upsert_track_info
