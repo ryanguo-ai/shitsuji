@@ -43,25 +43,10 @@ def _read_flac_tags(file_path: str) -> tuple[str, str, str]:
         return "", "", ""
 
 
-class FolderScannerApp(tk.Tk):
+class ScanTab(tk.Frame):
 
-    def __init__(self):
-        super().__init__()
-        self.title("Folder Scanner")
-
-        screen_w = self.winfo_screenwidth()
-        screen_h = self.winfo_screenheight()
-        if screen_w > 0 and screen_h > 0:
-            win_w, win_h = screen_w // 2, screen_h // 2
-        else:
-            screen_w, screen_h = 1280, 720
-            win_w, win_h = 640, 360
-        x = (screen_w - win_w) // 2
-        y = (screen_h - win_h) // 2
-        self.geometry(f"{win_w}x{win_h}+{x}+{y}")
-        self.minsize(700, 450)
-        self.configure(bg="#f5f5f5")
-
+    def __init__(self, master):
+        super().__init__(master, bg="#f5f5f5")
         self._settings = self._load_settings()
         self._build_ui()
 
@@ -485,6 +470,50 @@ class FolderScannerApp(tk.Tk):
         self._tag_tree.delete(*self._tag_tree.get_children())
 
 
+# ------------------------------------------------------------------ #
+# Search tab (placeholder)                                            #
+# ------------------------------------------------------------------ #
+
+class SearchTab(tk.Frame):
+
+    def __init__(self, master):
+        super().__init__(master, bg="#f5f5f5")
+        tk.Label(
+            self, text="🔍  Search",
+            font=("Segoe UI", 14, "bold"),
+            fg="#2c3e50", bg="#f5f5f5",
+        ).pack(expand=True)
+
+
+# ------------------------------------------------------------------ #
+# Application root                                                    #
+# ------------------------------------------------------------------ #
+
+class App(tk.Tk):
+
+    def __init__(self):
+        super().__init__()
+        self.title("Shitsuji")
+
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        if screen_w > 0 and screen_h > 0:
+            win_w, win_h = screen_w // 2, screen_h // 2
+        else:
+            screen_w, screen_h = 1280, 720
+            win_w, win_h = 640, 360
+        x = (screen_w - win_w) // 2
+        y = (screen_h - win_h) // 2
+        self.geometry(f"{win_w}x{win_h}+{x}+{y}")
+        self.minsize(700, 450)
+
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill=tk.BOTH, expand=True)
+
+        notebook.add(SearchTab(notebook), text="  Search  ")
+        notebook.add(ScanTab(notebook), text="  Scan  ")
+
+
 if __name__ == "__main__":
-    app = FolderScannerApp()
+    app = App()
     app.mainloop()
