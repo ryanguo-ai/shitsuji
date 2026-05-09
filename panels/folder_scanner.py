@@ -321,6 +321,18 @@ class ScanTab(tk.Frame):
                 label=label,
                 command=lambda: self._play_files(audio_paths),
             )
+
+        flac_paths = [
+            p for p in paths
+            if os.path.splitext(p)[1].lstrip(".").upper() == "FLAC"
+        ]
+        if flac_paths:
+            menu.add_command(
+                label=f"🏷  Edit Tags",
+                command=lambda: self._edit_tags(flac_paths),
+            )
+
+        if audio_paths or flac_paths:
             menu.add_separator()
 
         menu.add_command(
@@ -341,6 +353,10 @@ class ScanTab(tk.Frame):
                                  f"Executable not found:\n{foobar}")
             return
         subprocess.Popen([foobar, "/play", *paths])
+
+    def _edit_tags(self, paths: list[str]):
+        from panels.edit_tags_panel import EditTagsPanel
+        EditTagsPanel(self.winfo_toplevel(), paths)
 
     def _copy_paths(self, paths: list[str]):
         self.clipboard_clear()
