@@ -10,6 +10,8 @@ from tkinter import ttk, messagebox
 from mutagen.flac import FLAC
 from PIL import Image, ImageTk
 
+from panels.lyrics_panel import LyricsPanel
+
 # FLAC picture type IDs
 _PIC_FRONT = 3
 _PIC_BACK = 4
@@ -109,6 +111,11 @@ class AudioDetailsPanel(tk.Frame):
         if not item or col not in ("#1", "#2"):
             return
 
+        tag_name = self._tag_tree.item(item, "values")[0]
+        if tag_name.upper() == "LYRICS":
+            self._open_lyrics(item)
+            return
+
         bbox = self._tag_tree.bbox(item, col)
         if not bbox:
             return
@@ -146,6 +153,20 @@ class AudioDetailsPanel(tk.Frame):
         entry.bind("<Tab>", commit)
         entry.bind("<Escape>", cancel)
         entry.bind("<FocusOut>", commit)
+
+    def _open_lyrics(self, item):
+        lyrics = self._tag_tree.item(item, "values")[1]
+
+        def on_save(new_lyrics: str):
+            self._tag_tree.item(item, values=("LYRICS", new_lyrics))
+            self._mark_dirty()
+
+        LyricsPanel(
+            self.winfo_toplevel(),
+            self._current_path or "",
+            lyrics,
+            on_save=on_save,
+        )
 
     def _mark_dirty(self):
         self._dirty = True
