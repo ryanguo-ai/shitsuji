@@ -67,18 +67,7 @@ class ScanTab(tk.Frame):
         row = tk.Frame(self, bg="#f5f5f5", pady=10, padx=16)
         row.pack(fill=tk.X)
 
-        tk.Label(row, text="Folder:", font=("Segoe UI", 10),
-                 bg="#f5f5f5").pack(side=tk.LEFT, padx=(0, 6))
-
-        self.path_var = tk.StringVar(value=r"D:/_sample/")
-        self.path_entry = tk.Entry(
-            row, textvariable=self.path_var,
-            font=("Segoe UI", 10), relief=tk.SOLID, bd=1,
-        )
-        self.path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
-
-        ttk.Button(row, text="Browse…", command=self._browse).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(row, text="Scan", command=self._scan).pack(side=tk.LEFT)
+        ttk.Button(row, text="Check Tracks", command=self._check_tracks).pack(side=tk.LEFT)
 
         # ── Options row ───────────────────────────────────────────────── #
         opts = tk.Frame(self, bg="#f5f5f5", padx=16)
@@ -117,27 +106,29 @@ class ScanTab(tk.Frame):
         tree_frame = tk.Frame(self._paned, bg="#f5f5f5")
         self._paned.add(tree_frame, stretch="always", minsize=400)
 
-        columns = ("fpath", "ftype", "fartist", "ftitle", "fbitrate", "fsize", "fmodified")
+        columns = ("finlib", "fpath", "ftype", "fartist", "ftitle", "fbitrate", "fsize", "fmodified")
         self.tree = ttk.Treeview(
             tree_frame, columns=columns, show="headings",
             selectmode="extended",
         )
 
-        self.tree.heading("fpath", text="Full Path", anchor=tk.W)
-        self.tree.heading("ftype", text="Type", anchor=tk.W)
-        self.tree.heading("fartist", text="Artist", anchor=tk.W)
-        self.tree.heading("ftitle", text="Title", anchor=tk.W)
-        self.tree.heading("fbitrate", text="Bitrate", anchor=tk.E)
-        self.tree.heading("fsize", text="Size", anchor=tk.E)
-        self.tree.heading("fmodified", text="Modified", anchor=tk.W)
+        self.tree.heading("finlib",    text="In Lib",    anchor=tk.CENTER)
+        self.tree.heading("fpath",     text="Full Path", anchor=tk.W)
+        self.tree.heading("ftype",     text="Type",      anchor=tk.W)
+        self.tree.heading("fartist",   text="Artist",    anchor=tk.W)
+        self.tree.heading("ftitle",    text="Title",     anchor=tk.W)
+        self.tree.heading("fbitrate",  text="Bitrate",   anchor=tk.E)
+        self.tree.heading("fsize",     text="Size",      anchor=tk.E)
+        self.tree.heading("fmodified", text="Modified",  anchor=tk.W)
 
-        self.tree.column("fpath", width=340, stretch=True)
-        self.tree.column("ftype", width=80, stretch=False)
-        self.tree.column("fartist", width=160, stretch=False)
-        self.tree.column("ftitle", width=200, stretch=False)
-        self.tree.column("fbitrate", width=90, anchor=tk.E, stretch=False)
-        self.tree.column("fsize", width=80, anchor=tk.E, stretch=False)
-        self.tree.column("fmodified", width=140, stretch=False)
+        self.tree.column("finlib",    width=55,  anchor=tk.CENTER, stretch=False)
+        self.tree.column("fpath",     width=300, stretch=True)
+        self.tree.column("ftype",     width=60,  stretch=False)
+        self.tree.column("fartist",   width=150, stretch=False)
+        self.tree.column("ftitle",    width=190, stretch=False)
+        self.tree.column("fbitrate",  width=80,  anchor=tk.E, stretch=False)
+        self.tree.column("fsize",     width=70,  anchor=tk.E, stretch=False)
+        self.tree.column("fmodified", width=130, stretch=False)
 
         # Scrollbars
         vsb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
@@ -148,8 +139,10 @@ class ScanTab(tk.Frame):
         hsb.pack(side=tk.BOTTOM, fill=tk.X)
         self.tree.pack(fill=tk.BOTH, expand=True)
 
-        self.tree.tag_configure("odd", background="#ffffff")
-        self.tree.tag_configure("even", background="#ecf0f1")
+        self.tree.tag_configure("odd",    background="#ffffff")
+        self.tree.tag_configure("even",   background="#ecf0f1")
+        self.tree.tag_configure("inlib",  background="#eafaf1", foreground="#1e8449")
+        self.tree.tag_configure("notlib", background="#fdf2f8", foreground="#922b21")
 
         self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
         self.tree.bind("<Button-3>", self._on_row_right_click)
@@ -199,15 +192,9 @@ class ScanTab(tk.Frame):
     # Actions                                                              #
     # ------------------------------------------------------------------ #
 
-    def _browse(self):
-        folder = filedialog.askdirectory(title="Select a folder to scan")
-        if folder:
-            self.path_var.set(folder)
-
     def _scan(self):
-        folder = self.path_var.get().strip()
+        folder = filedialog.askdirectory(title="Select a folder to scan")
         if not folder:
-            messagebox.showwarning("No folder", "Please select a folder first.")
             return
         if not os.path.isdir(folder):
             messagebox.showerror("Invalid folder", f"'{folder}' is not a valid directory.")
@@ -229,11 +216,51 @@ class ScanTab(tk.Frame):
         self.status_var.set(f"Found {total} file{'s' if total != 1 else ''}  in  {folder}")
         self.footer_var.set(f"Scan complete — {total} file{'s' if total != 1 else ''} found.")
 
-    # ------------------------------------------------------------------ #
-    # List population                                                      #
-    # ------------------------------------------------------------------ #
+    def _check_tracks(self):
+        """Refresh the In Lib column for every row in the table."""
+        from panels.database import get_track_info
 
-    def _populate_list(self, folder, show_hidden, recursive):
+        items = self.tree.get_children()
+        if not items:
+            self.status_var.set("No tracks to check.")
+            return
+
+        self.status_var.set("Checking library…")
+        self.update_idletasks()
+
+        # Build a lookup set: (artist_lower, title_lower, album_lower)
+        lib_set: set[tuple[str, str, str]] = set()
+        for row in get_track_info():
+            lib_set.add((
+                (row["artist"] or "").strip().lower(),
+                (row["title"]  or "").strip().lower(),
+                (row["album"]  or "").strip().lower(),
+            ))
+
+        found = 0
+        for i, item in enumerate(items):
+            vals   = list(self.tree.item(item, "values"))
+            artist = (vals[3] or "").strip().lower()
+            title  = (vals[4] or "").strip().lower()
+            matched = bool(artist and title) and any(
+                a == artist and t == title
+                for a, t, _ in lib_set
+            )
+            if matched:
+                vals[0] = "🟢"
+                self.tree.item(item, values=vals, tags=("inlib",))
+                found += 1
+            else:
+                vals[0] = "🔴"
+                plain = "odd" if i % 2 == 0 else "even"
+                self.tree.item(item, values=vals, tags=(plain,))
+
+        total = len(items)
+        self.status_var.set(
+            f"Check complete — {found} of {total} track{'s' if total != 1 else ''} found in lib."
+        )
+
+
         """Walk the folder and insert every file as a flat row."""
         walker = os.walk(folder) if recursive else self._single_level(folder)
 
@@ -261,7 +288,7 @@ class ScanTab(tk.Frame):
         tag = "odd" if len(self.tree.get_children()) % 2 == 0 else "even"
         self.tree.insert(
             "", "end",
-            values=(full_path, file_type, artist, title, bitrate, size, modified),
+            values=("", full_path, file_type, artist, title, bitrate, size, modified),
             tags=(tag,),
         )
 
@@ -326,7 +353,7 @@ class ScanTab(tk.Frame):
             self.tree.selection_set(item)
 
         selected = self.tree.selection()
-        paths = [self.tree.item(i, "values")[0] for i in selected]
+        paths = [self.tree.item(i, "values")[1] for i in selected]
         audio_paths = [
             p for p in paths
             if os.path.splitext(p)[1].lstrip(".").upper() in AUDIO_EXTENSIONS
@@ -465,7 +492,7 @@ class ScanTab(tk.Frame):
         values = self.tree.item(selected[0], "values")
         if not values:
             return
-        full_path, file_type = values[0], values[1]
+        full_path, file_type = values[1], values[2]
         if file_type == "FLAC":
             self._detail_panel.show_flac(full_path)
         else:
