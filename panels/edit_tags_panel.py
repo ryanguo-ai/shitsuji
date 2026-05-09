@@ -102,9 +102,16 @@ class EditTagsPanel(tk.Toplevel):
         self._tree.tag_configure("normal",  background="#ffffff")
         self._tree.tag_configure("multi",   background="#fffbe6", foreground="#856404")
         self._tree.tag_configure("edited",  background="#e8f4fd", foreground="#0c4a6e")
-        self._tree.tag_configure("deleted", background="#fde8e8", foreground="#9b1c1c")
 
-        self._tree.bind("<Double-1>", self._start_edit)
+        self._tree.bind("<Double-1>",        self._start_edit)
+        self._tree.bind("<Return>",          self._start_edit)
+        self._tree.bind("<F2>",              self._start_edit)
+
+        # ── Hint ── #
+        tk.Label(
+            self, text="Double-click or press F2 / Enter to edit a value.",
+            font=("Segoe UI", 8), fg="#95a5a6", bg="#f5f5f5", anchor="w", padx=12,
+        ).pack(fill=tk.X, pady=(2, 0))
 
         # ── Bottom toolbar ── #
         toolbar = tk.Frame(self, bg="#ecf0f1", pady=6, padx=10)
@@ -132,21 +139,88 @@ class EditTagsPanel(tk.Toplevel):
             self._tree.insert("", "end", values=(tag_name, display_val), tags=(row_tag,))
 
     # ------------------------------------------------------------------ #
-    # Inline editing (value column only)                                   #
+    # Inline editing (both tag name and value columns)                     #
     # ------------------------------------------------------------------ #
 
-    def _start_edit(self, event):
-        item = self._tree.identify_row(event.y)
-        col  = self._tree.identify_column(event.x)
-        if not item or col != "#2" or item in self._deleted:
-            return
+    def _start_edit(self, event=None):
+        # For keyboard triggers, use the currently focused/selected row
+        if event and event.type == tk.EventType.KeyPress:
+            selected = self._tree.selection()
+            if not selected:
+                return
+            item = selected[0]
+            col  = "#2"   # default to value column for keyboard
+        else:
+            item = self._tree.identify_row(event.y)
+            col  = self._tree.identify_column(event.x)
+            if not item:
+                return
+            # Only allow editing col 1 (tag name) or col 2 (value)
+            if col not in ("#1", "#2"):
+                return
 
         bbox = self._tree.bbox(item, col)
         if not bbox:
             return
         x, y, w, h = bbox
 
-        # Strip the «multiple values» prefix so the user starts with a blank slate
+        col_idx = 0 if col == "#1" else 1
+        current = self._tree.item(item, "values")[col_idx]
+
+        # Clear «multiple values» prefix when editing value column
+        if col_idx == 1 and current.startswith(MULTI_PREFIX):
+            current = ""
+
+        var   = tk.StringVar(value=current)
+        entry = tk.Entry(
+            self._tree, textvariable=var,
+            font=("Segoe UI", 9), relief=tk.SOLID, bd=1,
+        )
+        entry.place(x=x, y=y, width=w, height=h)
+        entry.select_range(0, tk.END)
+        entry.focus_set()
+
+        done = [False]
+
+        def commit(_=None):
+            if done[0]:
+                return
+            done[0] = True
+            entry.destroy()
+            new_val = var.get().strip()
+            vals = list(self._tree.item(item, "values"))
+            vals[col_idx] = new_val
+            self._tree.item(item, values=tuple(vals), tags=("edited",))
+            # Track edited value (keyed by item; store full (tag, value) tuple)
+            self._edited[item] = (vals[0], vals[1])
+
+        def cancel(_=None):
+            done[0] = True
+            entry.destroy()
+
+        def tab_next(_=None):
+            commit()
+            # Advance to next row
+            children = self._tree.get_children()
+            if item in children:
+                idx = list(children).index(item)
+                if idx + 1 < len(children):
+                    nxt = children[idx + 1]
+                    self._tree.selection_set(nxt)
+                    self._tree.focus(nxt)
+                    self.after(50, lambda: self._start_edit_row(nxt))
+
+        entry.bind("<Return>",   commit)
+        entry.bind("<Tab>",      tab_next)
+        entry.bind("<Escape>",   cancel)
+        entry.bind("<FocusOut>", commit)
+
+    def _start_edit_row(self, item):
+        """Open editor on value column of a specific row (used by Tab navigation)."""
+        bbox = self._tree.bbox(item, "#2")
+        if not bbox:
+            return
+        x, y, w, h = bbox
         current = self._tree.item(item, "values")[1]
         if current.startswith(MULTI_PREFIX):
             current = ""
@@ -167,17 +241,17 @@ class EditTagsPanel(tk.Toplevel):
                 return
             done[0] = True
             entry.destroy()
-            new_val  = var.get().strip()
-            tag_name = self._tree.item(item, "values")[0]
-            self._tree.item(item, values=(tag_name, new_val), tags=("edited",))
-            self._edited[item] = new_val
+            new_val = var.get().strip()
+            vals = list(self._tree.item(item, "values"))
+            vals[1] = new_val
+            self._tree.item(item, values=tuple(vals), tags=("edited",))
+            self._edited[item] = (vals[0], vals[1])
 
         def cancel(_=None):
             done[0] = True
             entry.destroy()
 
         entry.bind("<Return>",   commit)
-        entry.bind("<Tab>",      commit)
         entry.bind("<Escape>",   cancel)
         entry.bind("<FocusOut>", commit)
 
@@ -200,9 +274,10 @@ class EditTagsPanel(tk.Toplevel):
     # ------------------------------------------------------------------ #
 
     def _save(self):
+        # _edited maps item_id → (tag_name, new_value)
         updates = {
-            self._tree.item(i, "values")[0].lower(): val
-            for i, val in self._edited.items()
+            tag_name.lower(): val
+            for tag_name, val in self._edited.values()
         }
 
         if not self._deleted_keys and not updates:
