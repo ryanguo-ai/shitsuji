@@ -47,8 +47,8 @@ class EditTagsPanel(tk.Toplevel):
     def __init__(self, parent: tk.Widget, paths: list[str]):
         super().__init__(parent)
         self._paths = list(paths)
-        self._deleted: set  = set()   # item IDs marked for deletion
-        self._edited:  dict = {}      # item ID → new value string
+        self._deleted_keys: set = set()  # lowercase tag names removed from table
+        self._edited:       dict = {}    # item ID → new value string
 
         n = len(paths)
         self.title(f"Edit Tags — {n} file{'s' if n > 1 else ''}")
@@ -124,7 +124,7 @@ class EditTagsPanel(tk.Toplevel):
 
     def _load_tags(self):
         self._tree.delete(*self._tree.get_children())
-        self._deleted.clear()
+        self._deleted_keys.clear()
         self._edited.clear()
 
         for tag_name, display_val in _aggregate_tags(self._paths):
@@ -186,29 +186,26 @@ class EditTagsPanel(tk.Toplevel):
     # ------------------------------------------------------------------ #
 
     def _delete_selected(self):
-        for item in self._tree.selection():
-            if item not in self._deleted:
-                self._deleted.add(item)
-                self._edited.pop(item, None)
-                tag_name = self._tree.item(item, "values")[0]
-                self._tree.item(item, tags=("deleted",))
+        items = self._tree.selection()
+        if not items:
+            return
+        for item in items:
+            tag_name = self._tree.item(item, "values")[0].lower()
+            self._deleted_keys.add(tag_name)
+            self._edited.pop(item, None)
+            self._tree.delete(item)
 
     # ------------------------------------------------------------------ #
     # Save                                                                 #
     # ------------------------------------------------------------------ #
 
     def _save(self):
-        deleted_keys = {
-            self._tree.item(i, "values")[0].lower()
-            for i in self._deleted
-        }
         updates = {
             self._tree.item(i, "values")[0].lower(): val
             for i, val in self._edited.items()
-            if i not in self._deleted
         }
 
-        if not deleted_keys and not updates:
+        if not self._deleted_keys and not updates:
             self.destroy()
             return
 
@@ -217,7 +214,7 @@ class EditTagsPanel(tk.Toplevel):
             try:
                 flac = FLAC(path)
                 for key in list(flac.keys()):
-                    if key.lower() in deleted_keys:
+                    if key.lower() in self._deleted_keys:
                         del flac[key]
                 for key, val in updates.items():
                     flac[key] = [val]
