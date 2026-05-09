@@ -68,9 +68,10 @@ def _check_lib_ready(file_path: str) -> bool:
 
 class ScanTab(tk.Frame):
 
-    def __init__(self, master):
+    def __init__(self, master, on_compare=None):
         super().__init__(master, bg="#f5f5f5")
         self._settings = load_settings()
+        self._on_compare = on_compare   # callable(src_path, lib_path) or None
         self._build_ui()
 
     # ------------------------------------------------------------------ #
@@ -443,6 +444,16 @@ class ScanTab(tk.Frame):
         if audio_paths or flac_paths:
             menu.add_separator()
 
+        # ── Compare track with Lib (only for single 🟡 rows) ── #
+        if (len(selected) == 1 and self._on_compare is not None):
+            clicked_vals = self.tree.item(item, "values")
+            if clicked_vals[1] == "🟡":          # inlib_diff — metadata match, different MD5
+                menu.add_command(
+                    label="🔍  Compare track with Lib",
+                    command=lambda: self._open_compare(item),
+                )
+                menu.add_separator()
+
         # ── Send to Lib submenu ── #
         lib_menu = tk.Menu(menu, tearoff=0)
         for partition in MUSIC_LIB_PARTITIONS:
@@ -458,6 +469,37 @@ class ScanTab(tk.Frame):
             command=lambda: self._copy_paths(paths),
         )
         menu.tk_popup(event.x_root, event.y_root)
+
+    def _open_compare(self, item):
+        """Find the matching lib track and invoke the on_compare callback."""
+        from panels.database import find_track_by_metadata
+        vals = self.tree.item(item, "values")
+        src_path = vals[2]
+        artist   = (vals[4] or "").strip()
+        title    = (vals[5] or "").strip()
+        album    = (vals[6] or "").strip()
+
+        matches = find_track_by_metadata(artist, title, album)
+        if not matches:
+            messagebox.showinfo(
+                "No lib track found",
+                "Could not find a matching track record in the library database.")
+            return
+
+        # Use the most-recently-updated match
+        row = matches[0]
+        partition = row["partition"]
+        rel_path  = row["rel_path"]
+        lib_root  = self._settings.get("music_lib_paths", {}).get(partition, "")
+        lib_path  = os.path.join(lib_root, partition, rel_path) if lib_root else ""
+
+        if not lib_path or not os.path.isfile(lib_path):
+            messagebox.showwarning(
+                "Lib file not found",
+                f"DB record found but file is missing:\n{lib_path or '(path unknown)'}")
+            return
+
+        self._on_compare(src_path, lib_path)
 
     def _play_files(self, paths: list[str]):
         import subprocess

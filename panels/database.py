@@ -220,6 +220,21 @@ def get_track_info(partition: str | None = None) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def find_track_by_metadata(artist: str, title: str, album: str) -> list[sqlite3.Row]:
+    """Return track_info rows whose artist/title/album match (case-insensitive)."""
+    with _connect() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM track_info
+             WHERE lower(trim(artist)) = lower(trim(?))
+               AND lower(trim(title))  = lower(trim(?))
+               AND lower(trim(album))  = lower(trim(?))
+             ORDER BY updated_at DESC
+            """,
+            (artist, title, album),
+        ).fetchall()
+
+
 def delete_track_info(partition: str, rel_path: str) -> None:
     """Remove a single track_info record (cascades to track_tags)."""
     with _connect() as conn:

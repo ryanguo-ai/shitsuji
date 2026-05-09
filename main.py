@@ -8,6 +8,7 @@ from tkinterdnd2 import TkinterDnD
 
 from panels.folder_scanner import ScanTab
 from panels.search_panel import SearchTab
+from panels.compare_tracks_panel import CompareTracksTab
 from panels.settings_panel import SettingsDialog, load_settings, save_settings
 from panels.database import init_db
 from panels.logger import get_logger
@@ -46,9 +47,17 @@ class App(TkinterDnD.Tk):
         self._notebook = ttk.Notebook(self)
         self._notebook.pack(fill=tk.BOTH, expand=True)
 
-        self._scan_tab = ScanTab(self._notebook)
-        self._notebook.add(SearchTab(self._notebook), text="  Search  ")
-        self._notebook.add(self._scan_tab, text="  Scan  ")
+        self._compare_tab = CompareTracksTab(
+            self._notebook,
+            settings_getter=lambda: self._settings,
+        )
+        self._scan_tab = ScanTab(
+            self._notebook,
+            on_compare=self._open_compare,
+        )
+        self._notebook.add(SearchTab(self._notebook),   text="  Search  ")
+        self._notebook.add(self._scan_tab,              text="  Scan  ")
+        self._notebook.add(self._compare_tab,           text="  Compare Tracks  ")
 
         self._restore_active_tab()
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
@@ -85,6 +94,15 @@ class App(TkinterDnD.Tk):
     def _on_settings_saved(self, updated: dict):
         self._settings.update(updated)
         self._scan_tab._settings.update(updated)
+
+    def _open_compare(self, src_path: str, lib_path: str):
+        """Switch to the Compare Tracks tab and load the two files."""
+        self._compare_tab.show_comparison(src_path, lib_path)
+        # Switch to the Compare Tracks tab
+        for idx in range(self._notebook.index("end")):
+            if self._notebook.tab(idx, "text").strip() == "Compare Tracks":
+                self._notebook.select(idx)
+                break
 
     def _on_close(self):
         self._settings["window_geometry"] = self.geometry()
