@@ -343,12 +343,131 @@ class _DeleteConfirmDialog(tk.Toplevel):
         self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
 
+class _DeleteFilesDialog(tk.Toplevel):
+    """Modal confirmation dialog before permanently deleting files from disk.
+
+    Displays Artist / Title / Album / Type / Size / Full Path for every
+    selected file so the user can review before committing.
+
+    Sets ``self.confirmed = True`` when the user clicks the delete button.
+    """
+
+    _COLS = [
+        ("artist",  "Artist",    130, tk.W),
+        ("title",   "Title",     160, tk.W),
+        ("album",   "Album",     120, tk.W),
+        ("type",    "Type",       50, tk.CENTER),
+        ("size",    "Size",       70, tk.E),
+        ("path",    "Full Path", 340, tk.W),
+    ]
+
+    def __init__(self, parent, rows: list[tuple]):
+        """
+        Parameters
+        ----------
+        rows : list of tuples
+            Each tuple is the full ``values`` tuple from the scan Treeview row:
+            (lib_ready, in_lib, full_path, file_type, artist, title, album,
+             bitrate, size, modified)
+        """
+        super().__init__(parent)
+        self.confirmed = False
+        self._rows = rows
+
+        self.title("Delete Files — Confirm")
+        self.configure(bg="#f5f5f5")
+        self.grab_set()
+        self.minsize(860, 420)
+        self.resizable(True, True)
+        self._build()
+        self._center()
+
+    # ------------------------------------------------------------------ #
+
+    def _build(self):
+        n = len(self._rows)
+
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)   # table gets all extra vertical space
+
+        # ── Header ── #
+        hdr = tk.Frame(self, bg="#c0392b", pady=8, padx=12)
+        hdr.grid(row=0, column=0, sticky="ew")
+        tk.Label(
+            hdr, text="🗑  Delete Files",
+            font=("Segoe UI", 12, "bold"), fg="white", bg="#c0392b",
+        ).pack(side=tk.LEFT)
+
+        # ── Warning banner ── #
+        warn = tk.Frame(self, bg="#fdf2f2", padx=12, pady=8)
+        warn.grid(row=1, column=0, sticky="ew")
+        tk.Label(
+            warn,
+            text=(
+                f"⚠  {n} file{'s' if n != 1 else ''} will be PERMANENTLY deleted "
+                "from disk.  This cannot be undone."
+            ),
+            font=("Segoe UI", 9, "bold"), fg="#c0392b", bg="#fdf2f2",
+        ).pack(anchor="w")
+
+        # ── File table ── #
+        tbl_frame = tk.Frame(self, bg="#f5f5f5")
+        tbl_frame.grid(row=2, column=0, sticky="nsew", padx=12, pady=8)
+        tbl_frame.columnconfigure(0, weight=1)
+        tbl_frame.rowconfigure(0, weight=1)
+
+        col_ids = [c[0] for c in self._COLS]
+        tree = ttk.Treeview(tbl_frame, columns=col_ids, show="headings",
+                            selectmode="none")
+        for cid, heading, width, anchor in self._COLS:
+            tree.heading(cid, text=heading, anchor=anchor)
+            tree.column(cid, width=width, anchor=anchor, stretch=(cid == "path"))
+        tree.tag_configure("row", background="#fdf2f2")
+
+        vsb = ttk.Scrollbar(tbl_frame, orient=tk.VERTICAL,   command=tree.yview)
+        hsb = ttk.Scrollbar(tbl_frame, orient=tk.HORIZONTAL, command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+
+        for sv in self._rows:
+            # sv = (lib_ready, in_lib, full_path, file_type,
+            #        artist, title, album, bitrate, size, modified)
+            tree.insert("", "end", tags=("row",),
+                        values=(sv[4], sv[5], sv[6], sv[3], sv[8], sv[2]))
+
+        # ── Buttons ── #
+        btn_frame = tk.Frame(self, bg="#f5f5f5", pady=8, padx=12)
+        btn_frame.grid(row=3, column=0, sticky="ew")
+
+        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(
+            side=tk.RIGHT, padx=(4, 0))
+        ttk.Button(
+            btn_frame,
+            text=f"🗑  Delete {n} File{'s' if n != 1 else ''}",
+            command=self._confirm,
+        ).pack(side=tk.RIGHT)
+
+    def _confirm(self):
+        self.confirmed = True
+        self.destroy()
+
+    def _center(self):
+        self.update_idletasks()
+        w = max(self.winfo_reqwidth(),  860)
+        h = max(self.winfo_reqheight(), 420)
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
+
 class ScanTab(tk.Frame, AudioMenuMixin):
 
-    def __init__(self, master, on_compare=None):
+    def __init__(self, master, on_compare=None, on_search_artist=None):
         super().__init__(master, bg="#f5f5f5")
         self._settings = load_settings()
-        self._on_compare = on_compare   # callable(src_path, lib_path) or None
+        self._on_compare = on_compare           # callable(src_path, lib_path) or None
+        self._on_search_artist = on_search_artist  # callable(artist_name) or None
         self._sort_col: str | None = None   # currently sorted column id
         self._sort_rev: bool = False        # True → descending
         self._build_ui()
@@ -923,6 +1042,52 @@ class ScanTab(tk.Frame, AudioMenuMixin):
             f"{total} remaining."
         )
 
+    def _delete_selected_files(self):
+        """Confirm then permanently delete the selected files from disk."""
+        selected = self.tree.selection()
+        if not selected:
+            return
+
+        rows = [self.tree.item(iid, "values") for iid in selected]
+        dlg = _DeleteFilesDialog(self, rows)
+        self.wait_window(dlg)
+        if not dlg.confirmed:
+            return
+
+        log = get_logger("scan_delete")
+        deleted_iids, errors = [], []
+        for iid, sv in zip(selected, rows):
+            path = sv[2]
+            try:
+                os.remove(path)
+                deleted_iids.append(iid)
+                log.info(f"Deleted: {path}")
+            except OSError as exc:
+                errors.append(f"{os.path.basename(path)}: {exc}")
+                log.error(f"Delete failed: {path} — {exc}")
+
+        # Remove successfully deleted rows from the tree
+        for iid in deleted_iids:
+            self.tree.delete(iid)
+
+        # Re-stripe
+        for i, iid in enumerate(self.tree.get_children()):
+            self.tree.item(iid, tags=("odd" if i % 2 else "even",))
+
+        total = len(self.tree.get_children())
+        self.footer_var.set(f"{total} file{'s' if total != 1 else ''} in list.")
+        n_ok = len(deleted_iids)
+        self.status_var.set(
+            f"🗑  Deleted {n_ok} file{'s' if n_ok != 1 else ''} from disk."
+            + (f"  {len(errors)} error(s)." if errors else "")
+        )
+
+        if errors:
+            messagebox.showerror(
+                "Delete — errors",
+                f"{n_ok} deleted, {len(errors)} failed:\n\n" + "\n".join(errors[:10]),
+            )
+
     def _on_drop(self, event):
         log = get_logger("scan_drop")
         paths = self.tk.splitlist(event.data)
@@ -960,6 +1125,16 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         paths = [self.tree.item(i, "values")[2] for i in selected]
 
         def extra(menu, paths, audio_paths, flac_paths):
+            # ── Search Artist in Artist Info ── #
+            if len(selected) == 1 and self._on_search_artist is not None:
+                artist = (self.tree.item(item, "values")[4] or "").strip()
+                if artist:
+                    menu.add_command(
+                        label=f"👤  Search Artist: {artist}",
+                        command=lambda a=artist: self._on_search_artist(a),
+                    )
+                    menu.add_separator()
+
             # ── Compare track with Lib (only for single 🟡 rows) ── #
             if len(selected) == 1 and self._on_compare is not None:
                 clicked_vals = self.tree.item(item, "values")
@@ -978,6 +1153,14 @@ class ScanTab(tk.Frame, AudioMenuMixin):
                     command=lambda p=partition: self._open_send_to_lib(paths, p),
                 )
             menu.add_cascade(label="📂  Send to Lib ▶", menu=lib_menu)
+            menu.add_separator()
+
+            # ── Delete files from disk ── #
+            n = len(selected)
+            menu.add_command(
+                label=f"🗑  Delete {n} File{'s' if n != 1 else ''} from Disk",
+                command=self._delete_selected_files,
+            )
             menu.add_separator()
 
         menu = self._build_audio_context_menu(paths, extra_items_fn=extra)

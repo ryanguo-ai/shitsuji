@@ -3,6 +3,7 @@ Audio Details Panel — shows cover art and tags for a selected audio file.
 Double-click any tag row to edit the tag name or value; Save Tags writes to disk.
 """
 
+import ctypes
 import io
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -30,6 +31,7 @@ class AudioDetailsPanel(tk.Frame):
     def __init__(self, master, on_after_save=None):
         super().__init__(master, bg="#f0f0f0", width=280)
         self._cover_photo = None
+        self._cover_image_data: bytes | None = None   # raw bytes of current cover art
         self._current_path: str | None = None
         self._dirty = False
         self._deleted_items: set = set()   # item IDs marked for deletion
@@ -55,6 +57,7 @@ class AudioDetailsPanel(tk.Frame):
             text="No cover art", font=("Segoe UI", 9, "italic"), fg="#7f8c8d",
         )
         self._cover_label.pack(pady=(12, 4))
+        self._cover_label.bind("<Button-3>", self._on_cover_right_click)
 
         # Image count / dimension / size info
         img_info_frame = tk.Frame(self, bg="#f0f0f0")
@@ -262,10 +265,13 @@ class AudioDetailsPanel(tk.Frame):
                 img.thumbnail((240, 240), Image.LANCZOS)
                 self._cover_photo = ImageTk.PhotoImage(img)
                 self._cover_label.configure(image=self._cover_photo, text="")
+                self._cover_image_data = cover_pic.data
             except Exception:
                 self._cover_label.configure(image="", text="(cover unreadable)")
+                self._cover_image_data = None
         else:
             self._cover_label.configure(image="", text="No cover art")
+            self._cover_image_data = None
 
         # Image info
         total = len(pictures)
@@ -307,6 +313,62 @@ class AudioDetailsPanel(tk.Frame):
         self._save_btn.configure(state="disabled")
         self._cover_label.configure(image="", text="No cover art")
         self._cover_photo = None
+        self._cover_image_data = None
         self._img_count_var.set("")
         self._img_dims_var.set("")
         self._tag_tree.delete(*self._tag_tree.get_children())
+
+    # ------------------------------------------------------------------ #
+    # Cover art context menu                                               #
+    # ------------------------------------------------------------------ #
+
+    def _on_cover_right_click(self, event) -> None:
+        if not self._cover_image_data:
+            return
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(
+            label="📋  Copy Image to Clipboard",
+            command=self._copy_cover_to_clipboard,
+        )
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _copy_cover_to_clipboard(self) -> None:
+        """Copy the full-resolution cover art to the Windows clipboard (CF_DIB)."""
+        if not self._cover_image_data:
+            return
+        try:
+            img = Image.open(io.BytesIO(self._cover_image_data)).convert("RGB")
+
+            # Encode as BMP and strip the 14-byte BITMAPFILEHEADER;
+            # the clipboard expects a raw BITMAPINFOHEADER + pixel data (CF_DIB).
+            buf = io.BytesIO()
+            img.save(buf, "BMP")
+            dib = buf.getvalue()[14:]
+
+            GMEM_MOVEABLE = 0x0002
+            CF_DIB        = 8
+
+            k32 = ctypes.windll.kernel32
+            u32 = ctypes.windll.user32
+
+            # Declare correct arg/return types so 64-bit handles are not truncated.
+            k32.GlobalAlloc.restype  = ctypes.c_void_p
+            k32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+            k32.GlobalLock.restype   = ctypes.c_void_p
+            k32.GlobalLock.argtypes  = [ctypes.c_void_p]
+            k32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+            u32.SetClipboardData.restype  = ctypes.c_void_p
+            u32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+
+            u32.OpenClipboard(0)
+            try:
+                u32.EmptyClipboard()
+                h = k32.GlobalAlloc(GMEM_MOVEABLE, len(dib))
+                p = k32.GlobalLock(h)
+                ctypes.memmove(p, dib, len(dib))
+                k32.GlobalUnlock(h)
+                u32.SetClipboardData(CF_DIB, h)
+            finally:
+                u32.CloseClipboard()
+        except Exception as exc:
+            messagebox.showerror("Copy failed", str(exc), parent=self)

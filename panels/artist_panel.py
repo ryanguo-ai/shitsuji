@@ -448,6 +448,14 @@ class ArtistTab(tk.Frame):
     # Data loading                                                         #
     # ------------------------------------------------------------------ #
 
+    def search_artist(self, name: str) -> None:
+        """Set the search field to *name* and immediately query the local DB.
+
+        Called externally (e.g. from the Scan panel's context menu).
+        """
+        self._search_var.set(name)
+        self._on_search_in_lib()
+
     def _on_search_in_lib(self) -> None:
         self._refresh_artist_list(self._search_var.get())
 

@@ -56,11 +56,13 @@ class App(TkinterDnD.Tk):
         self._scan_tab = ScanTab(
             self._notebook,
             on_compare=self._open_compare,
+            on_search_artist=self._open_artist_search,
         )
+        self._artist_tab = ArtistTab(self._notebook)
         self._notebook.add(SearchTab(self._notebook),   text="  Search In Lib  ")
         self._notebook.add(self._scan_tab,              text="  Scan  ")
         self._notebook.add(self._compare_tab,           text="  Compare Tracks  ")
-        self._notebook.add(ArtistTab(self._notebook),   text="  Artist Info  ")
+        self._notebook.add(self._artist_tab,            text="  Artist Info  ")
 
         self._restore_active_tab()
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
@@ -137,6 +139,14 @@ class App(TkinterDnD.Tk):
             if self._notebook.tab(idx, "text").strip() == "Compare Tracks":
                 self._notebook.select(idx)
                 break
+
+    def _open_artist_search(self, artist_name: str):
+        """Switch to the Artist Info tab and search for *artist_name* in the DB."""
+        for idx in range(self._notebook.index("end")):
+            if self._notebook.tab(idx, "text").strip() == "Artist Info":
+                self._notebook.select(idx)
+                break
+        self._artist_tab.search_artist(artist_name)
 
     def _on_close(self):
         self._settings["window_geometry"] = self.geometry()
