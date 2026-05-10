@@ -27,12 +27,13 @@ def _fmt_size(n: int) -> str:
 
 class AudioDetailsPanel(tk.Frame):
 
-    def __init__(self, master):
+    def __init__(self, master, on_after_save=None):
         super().__init__(master, bg="#f0f0f0", width=280)
         self._cover_photo = None
         self._current_path: str | None = None
         self._dirty = False
         self._deleted_items: set = set()   # item IDs marked for deletion
+        self._on_after_save = on_after_save  # optional callable(path: str)
         self._build()
 
     # ------------------------------------------------------------------ #
@@ -225,6 +226,8 @@ class AudioDetailsPanel(tk.Frame):
                 if key:
                     flac[key.lower()] = [val]
             flac.save()
+            if self._on_after_save:
+                self._on_after_save(self._current_path)
             # Remove the deleted rows from the tree now that save succeeded
             for iid in self._deleted_items:
                 self._tag_tree.delete(iid)
