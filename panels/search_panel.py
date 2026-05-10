@@ -10,6 +10,7 @@ from tkinter import ttk
 from mutagen.flac import FLAC
 
 from panels.audio_details_panel import AudioDetailsPanel
+from panels.audio_menu import AudioMenuMixin
 from panels.database import compute_file_md5, get_track_info, upsert_track_info
 from panels.logger import get_logger
 from panels.settings_panel import load_settings, save_settings
@@ -30,7 +31,7 @@ def _fuzzy_match(query: str, target: str, threshold: float = 0.5) -> bool:
     return difflib.SequenceMatcher(None, q, t).ratio() >= threshold
 
 
-class SearchTab(tk.Frame):
+class SearchTab(tk.Frame, AudioMenuMixin):
 
     # (col_id, heading_label, width, anchor, stretch)
     _COL_DEFS = [
@@ -143,6 +144,7 @@ class SearchTab(tk.Frame):
         self.tree.tag_configure("even", background="#ecf0f1")
 
         self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
+        self.tree.bind("<Button-3>",         self._on_row_right_click)
 
         # Pagination (inside left pane, below tree)
         pag = tk.Frame(left, bg="#f5f5f5", pady=4)
@@ -268,6 +270,25 @@ class SearchTab(tk.Frame):
             self._selected_partition = None
             self._selected_rel_path  = None
             self._detail_panel.clear()
+
+    # ------------------------------------------------------------------ #
+    # Right-click context menu                                             #
+    # ------------------------------------------------------------------ #
+
+    def _on_row_right_click(self, event):
+        item = self.tree.identify_row(event.y)
+        if not item:
+            return
+
+        if item not in self.tree.selection():
+            self.tree.selection_set(item)
+
+        selected = self.tree.selection()
+        # values[1] is the full path in the Search result table
+        paths = [self.tree.item(i, "values")[1] for i in selected]
+
+        menu = self._build_audio_context_menu(paths)
+        menu.tk_popup(event.x_root, event.y_root)
 
     # ------------------------------------------------------------------ #
     # After-save: recompute MD5 and refresh DB                            #

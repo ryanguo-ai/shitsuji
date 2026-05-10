@@ -11,13 +11,9 @@ from mutagen.flac import FLAC
 from tkinterdnd2 import DND_FILES
 
 from panels.audio_details_panel import AudioDetailsPanel
+from panels.audio_menu import AUDIO_EXTENSIONS, AudioMenuMixin
 from panels.settings_panel import load_settings, save_settings, MUSIC_LIB_PARTITIONS
 from panels.logger import get_logger
-
-AUDIO_EXTENSIONS = {
-    "FLAC", "MP3", "AAC", "OGG", "OPUS", "WAV", "AIFF", "APE",
-    "WV", "M4A", "WMA", "DSF", "DFF", "MPC",
-}
 
 
 def format_size(size_bytes: int) -> str:
@@ -66,7 +62,7 @@ def _check_lib_ready(file_path: str) -> bool:
     except Exception:
         return False
 
-class ScanTab(tk.Frame):
+class ScanTab(tk.Frame, AudioMenuMixin):
 
     def __init__(self, master, on_compare=None):
         super().__init__(master, bg="#f5f5f5")
@@ -494,62 +490,29 @@ class ScanTab(tk.Frame):
 
         selected = self.tree.selection()
         paths = [self.tree.item(i, "values")[2] for i in selected]
-        audio_paths = [
-            p for p in paths
-            if os.path.splitext(p)[1].lstrip(".").upper() in AUDIO_EXTENSIONS
-        ]
 
-        menu = tk.Menu(self, tearoff=0)
+        def extra(menu, paths, audio_paths, flac_paths):
+            # ── Compare track with Lib (only for single 🟡 rows) ── #
+            if len(selected) == 1 and self._on_compare is not None:
+                clicked_vals = self.tree.item(item, "values")
+                if clicked_vals[1] == "🟡":
+                    menu.add_command(
+                        label="🔍  Compare track with Lib",
+                        command=lambda: self._open_compare(item),
+                    )
+                    menu.add_separator()
 
-        if audio_paths:
-            n = len(audio_paths)
-            label = f"▶  Play {n} file{'s' if n > 1 else ''} in foobar2000"
-            menu.add_command(
-                label=label,
-                command=lambda: self._play_files(audio_paths),
-            )
-
-        flac_paths = [
-            p for p in paths
-            if os.path.splitext(p)[1].lstrip(".").upper() == "FLAC"
-        ]
-        if flac_paths:
-            menu.add_command(
-                label=f"🏷  Edit Tags",
-                command=lambda: self._edit_tags(flac_paths),
-            )
-            menu.add_command(
-                label="🎨  Find Cover Art",
-                command=lambda: self._find_cover_art(flac_paths),
-            )
-
-        if audio_paths or flac_paths:
+            # ── Send to Lib submenu ── #
+            lib_menu = tk.Menu(menu, tearoff=0)
+            for partition in MUSIC_LIB_PARTITIONS:
+                lib_menu.add_command(
+                    label=partition,
+                    command=lambda p=partition: self._open_send_to_lib(paths, p),
+                )
+            menu.add_cascade(label="📂  Send to Lib ▶", menu=lib_menu)
             menu.add_separator()
 
-        # ── Compare track with Lib (only for single 🟡 rows) ── #
-        if (len(selected) == 1 and self._on_compare is not None):
-            clicked_vals = self.tree.item(item, "values")
-            if clicked_vals[1] == "🟡":          # inlib_diff — metadata match, different MD5
-                menu.add_command(
-                    label="🔍  Compare track with Lib",
-                    command=lambda: self._open_compare(item),
-                )
-                menu.add_separator()
-
-        # ── Send to Lib submenu ── #
-        lib_menu = tk.Menu(menu, tearoff=0)
-        for partition in MUSIC_LIB_PARTITIONS:
-            lib_menu.add_command(
-                label=partition,
-                command=lambda p=partition: self._open_send_to_lib(paths, p),
-            )
-        menu.add_cascade(label="📂  Send to Lib ▶", menu=lib_menu)
-        menu.add_separator()
-
-        menu.add_command(
-            label=f"Copy Path{'s' if len(paths) > 1 else ''}",
-            command=lambda: self._copy_paths(paths),
-        )
+        menu = self._build_audio_context_menu(paths, extra_items_fn=extra)
         menu.tk_popup(event.x_root, event.y_root)
 
     def _open_compare(self, item):
@@ -582,31 +545,6 @@ class ScanTab(tk.Frame):
             return
 
         self._on_compare(src_path, lib_path, partition, rel_path)
-
-    def _play_files(self, paths: list[str]):
-        import subprocess
-        foobar = self._settings.get("foobar_path", "").strip()
-        if not foobar:
-            messagebox.showwarning("foobar2000 not set",
-                                   "Please set the foobar2000 path in Settings.")
-            return
-        if not os.path.isfile(foobar):
-            messagebox.showerror("foobar2000 not found",
-                                 f"Executable not found:\n{foobar}")
-            return
-        subprocess.Popen([foobar, "/play", *paths])
-
-    def _edit_tags(self, paths: list[str]):
-        from panels.edit_tags_panel import EditTagsPanel
-        EditTagsPanel(self.winfo_toplevel(), paths)
-
-    def _find_cover_art(self, paths: list[str]):
-        from panels.cover_art_panel import CoverArtPanel
-        CoverArtPanel(self.winfo_toplevel(), paths, self._settings)
-
-    def _copy_paths(self, paths: list[str]):
-        self.clipboard_clear()
-        self.clipboard_append("\n".join(paths))
 
     def _open_send_to_lib(self, paths: list[str], partition: str):
         from panels.send_to_lib_panel import SendToLibPanel
