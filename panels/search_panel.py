@@ -12,6 +12,7 @@ from mutagen.flac import FLAC
 from panels.audio_details_panel import AudioDetailsPanel
 from panels.audio_menu import AudioMenuMixin
 from panels.database import compute_file_md5, get_track_info, upsert_track_info
+from panels.keyboard_selection import attach_keyboard_range_selection
 from panels.logger import get_logger
 from panels.settings_panel import load_settings, save_settings
 
@@ -146,6 +147,7 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
         self.tree.bind("<Button-3>",         self._on_row_right_click)
         self.tree.bind("<Control-a>", lambda _: self.tree.selection_set(self.tree.get_children()))
+        self._kb_sel = attach_keyboard_range_selection(self.tree)
 
         # Pagination (inside left pane, below tree)
         pag = tk.Frame(left, bg="#f5f5f5", pady=4)

@@ -12,6 +12,7 @@ from tkinterdnd2 import DND_FILES
 
 from panels.audio_details_panel import AudioDetailsPanel
 from panels.audio_menu import AUDIO_EXTENSIONS, AudioMenuMixin
+from panels.keyboard_selection import attach_keyboard_range_selection
 from panels.settings_panel import load_settings, save_settings, MUSIC_LIB_PARTITIONS
 from panels.logger import get_logger
 
@@ -459,6 +460,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self.tree.bind("<Button-3>", self._on_row_right_click)
         self.tree.bind("<Delete>", self._on_delete_key)
         self.tree.bind("<Control-a>", lambda _: self.tree.selection_set(self.tree.get_children()))
+        self._kb_sel = attach_keyboard_range_selection(self.tree)
 
         self.tree.drop_target_register(DND_FILES)
         self.tree.dnd_bind("<<Drop>>", self._on_drop)
