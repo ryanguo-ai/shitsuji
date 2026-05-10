@@ -760,7 +760,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         deleted_items: list = []
         delete_errors: list[tuple[str, str]] = []
 
-        for item, full_path, _ in to_delete:
+        for item, full_path, _lib_row, _sv in to_delete:
             try:
                 os.remove(full_path)
                 deleted_items.append(item)
