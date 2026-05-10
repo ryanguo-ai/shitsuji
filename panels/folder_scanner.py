@@ -38,6 +38,26 @@ def _read_flac_tags(file_path: str) -> tuple[str, str, str, str]:
         return "", "", "", ""
 
 
+def _read_audio_tags(file_path: str) -> tuple[str, str, str, str]:
+    """Return (artist, title, album, bitrate) for any mutagen-supported audio file."""
+    try:
+        from mutagen import File as MutagenFile
+        audio = MutagenFile(file_path, easy=True)
+        if audio is None:
+            return "", "", "", ""
+        tags = audio.tags or {}
+        artist  = tags.get("artist", [""])[0] if "artist" in tags else ""
+        title   = tags.get("title",  [""])[0] if "title"  in tags else ""
+        album   = tags.get("album",  [""])[0] if "album"  in tags else ""
+        bitrate = ""
+        info = getattr(audio, "info", None)
+        if info and getattr(info, "bitrate", 0):
+            bitrate = f"{round(info.bitrate / 1000)} kbps"
+        return artist, title, album, bitrate
+    except Exception:
+        return "", "", "", ""
+
+
 def _check_lib_ready(file_path: str) -> bool:
     """
     Return True if the file meets lib-ready criteria:
@@ -61,6 +81,89 @@ def _check_lib_ready(file_path: str) -> bool:
         return False
     except Exception:
         return False
+
+
+# Characters illegal in Windows file names
+_ILLEGAL_CHARS = r'\/:*?"<>|'
+
+
+def _sanitize_filename(name: str) -> str:
+    """Replace Windows-illegal characters and strip leading/trailing spaces and dots."""
+    for ch in _ILLEGAL_CHARS:
+        name = name.replace(ch, "_")
+    return name.strip(" .") or "_"
+
+
+class _NormalizeResultWindow(tk.Toplevel):
+    """Modal-ish result window listing renamed files and errors from a normalize run."""
+
+    def __init__(self, parent, renamed: list, errors: list):
+        super().__init__(parent)
+        self.title("Normalize File Name — Results")
+        self.configure(bg="#f5f5f5")
+        self.minsize(700, 380)
+        self.resizable(True, True)
+        self._build(renamed, errors)
+        self._center()
+
+    def _build(self, renamed, errors):
+        # ── Header ── #
+        hdr = tk.Frame(self, bg="#2c3e50", pady=8, padx=12)
+        hdr.pack(fill=tk.X)
+        n_ok  = len(renamed)
+        n_err = len(errors)
+        tk.Label(
+            hdr,
+            text=(
+                f"✅ {n_ok} renamed"
+                + (f"   ❌ {n_err} error{'s' if n_err != 1 else ''}" if n_err else "")
+            ),
+            font=("Segoe UI", 11, "bold"), fg="white", bg="#2c3e50",
+        ).pack(side=tk.LEFT)
+
+        # ── Table ── #
+        frame = tk.Frame(self, bg="#f5f5f5")
+        frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=8)
+
+        cols = ("status", "original", "result")
+        tree = ttk.Treeview(frame, columns=cols, show="headings", selectmode="browse")
+        tree.heading("status",   text="Status",        anchor=tk.W)
+        tree.heading("original", text="Original Path", anchor=tk.W)
+        tree.heading("result",   text="New Name / Error", anchor=tk.W)
+        tree.column("status",   width=90,  stretch=False)
+        tree.column("original", width=310, stretch=True)
+        tree.column("result",   width=280, stretch=True)
+
+        vsb = ttk.Scrollbar(frame, orient=tk.VERTICAL,   command=tree.yview)
+        hsb = ttk.Scrollbar(frame, orient=tk.HORIZONTAL, command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.pack(side=tk.RIGHT,  fill=tk.Y)
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
+        tree.pack(fill=tk.BOTH, expand=True)
+
+        tree.tag_configure("ok",  background="#eafaf1", foreground="#1e8449")
+        tree.tag_configure("err", background="#fdf2f2", foreground="#922b21")
+
+        for old, new in renamed:
+            tree.insert("", "end",
+                        values=("✅ Renamed", old, os.path.basename(new)),
+                        tags=("ok",))
+        for path, msg in errors:
+            tree.insert("", "end",
+                        values=("❌ Error", path, msg),
+                        tags=("err",))
+
+        # ── Close button ── #
+        ttk.Button(self, text="Close", command=self.destroy).pack(
+            side=tk.BOTTOM, pady=(0, 10))
+
+    def _center(self):
+        self.update_idletasks()
+        w = max(self.winfo_reqwidth(),  700)
+        h = max(self.winfo_reqheight(), 380)
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
 
 class ScanTab(tk.Frame, AudioMenuMixin):
 
@@ -91,7 +194,8 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         row = tk.Frame(self, bg="#f5f5f5", pady=10, padx=16)
         row.pack(fill=tk.X)
 
-        ttk.Button(row, text="Check Tracks", command=self._check_tracks).pack(side=tk.LEFT)
+        ttk.Button(row, text="Check Tracks",       command=self._check_tracks).pack(side=tk.LEFT)
+        ttk.Button(row, text="Normalize File Name", command=self._normalize_filenames).pack(side=tk.LEFT, padx=(8, 0))
 
         # ── Options row ───────────────────────────────────────────────── #
         opts = tk.Frame(self, bg="#f5f5f5", padx=16)
@@ -351,9 +455,16 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         for i, item in enumerate(items):
             vals      = list(self.tree.item(item, "values"))
             full_path = vals[2]
-            artist    = (vals[4] or "").strip().lower()
-            title     = (vals[5] or "").strip().lower()
-            album     = (vals[6] or "").strip().lower()
+
+            # ── Refresh tags from file ── #
+            ext = os.path.splitext(full_path)[1].lstrip(".").upper()
+            if ext in AUDIO_EXTENSIONS:
+                a, t, al, br = _read_audio_tags(full_path)
+                vals[4], vals[5], vals[6], vals[7] = a, t, al, br
+
+            artist = (vals[4] or "").strip().lower()
+            title  = (vals[5] or "").strip().lower()
+            album  = (vals[6] or "").strip().lower()
 
             # ── Lib Ready ── #
             is_ready = _check_lib_ready(full_path)
@@ -390,6 +501,69 @@ class ScanTab(tk.Frame, AudioMenuMixin):
 
         self.status_var.set(
             f"Check complete — {ready}/{total} lib-ready · {found}/{total} in lib."
+        )
+
+    # ------------------------------------------------------------------ #
+    # Normalize file names                                                 #
+    # ------------------------------------------------------------------ #
+
+    def _normalize_filenames(self):
+        """Rename each listed file to '{Artist} - {Title}{ext}'.
+
+        Processes selected rows when a selection exists, otherwise all rows.
+        Opens a result window summarising successes and failures.
+        """
+        selected = self.tree.selection()
+        items    = selected if selected else self.tree.get_children()
+        if not items:
+            self.status_var.set("No tracks to rename.")
+            return
+
+        renamed: list[tuple[str, str]] = []   # (old_path, new_path)
+        errors:  list[tuple[str, str]] = []   # (path, reason)
+
+        for item in items:
+            vals      = list(self.tree.item(item, "values"))
+            full_path = vals[2]
+            artist    = (vals[4] or "").strip()
+            title     = (vals[5] or "").strip()
+            ext       = os.path.splitext(full_path)[1]   # includes "."
+
+            if not artist or not title:
+                errors.append((full_path,
+                               "Missing artist or title — run Check Tracks first."))
+                continue
+
+            new_stem = _sanitize_filename(f"{artist} - {title}")
+            new_name = new_stem + ext
+            new_path = os.path.join(os.path.dirname(full_path), new_name)
+
+            if os.path.normcase(new_path) == os.path.normcase(full_path):
+                continue   # already correctly named — silently skip
+
+            if os.path.exists(new_path):
+                errors.append((full_path,
+                               f"Target already exists: {new_name}"))
+                continue
+
+            try:
+                os.rename(full_path, new_path)
+                vals[2] = new_path
+                self.tree.item(item, values=vals)
+                renamed.append((full_path, new_path))
+            except OSError as exc:
+                errors.append((full_path, str(exc)))
+
+        n_ok  = len(renamed)
+        n_err = len(errors)
+
+        if renamed or errors:
+            _NormalizeResultWindow(self.winfo_toplevel(), renamed, errors)
+
+        self.status_var.set(
+            f"Rename complete — {n_ok} renamed"
+            + (f", {n_err} error{'s' if n_err != 1 else ''}" if n_err else "")
+            + ("." if n_ok or n_err else " (nothing to do).")
         )
 
     # ------------------------------------------------------------------ #
