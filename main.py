@@ -8,6 +8,7 @@ from tkinterdnd2 import TkinterDnD
 
 from panels.folder_scanner import ScanTab
 from panels.search_panel import SearchTab
+from panels.artist_panel import ArtistTab
 from panels.compare_tracks_panel import CompareTracksTab
 from panels.settings_panel import SettingsDialog, load_settings, save_settings
 from panels.database import init_db
@@ -58,6 +59,7 @@ class App(TkinterDnD.Tk):
         self._notebook.add(SearchTab(self._notebook),   text="  Search In Lib  ")
         self._notebook.add(self._scan_tab,              text="  Scan  ")
         self._notebook.add(self._compare_tab,           text="  Compare Tracks  ")
+        self._notebook.add(ArtistTab(self._notebook),   text="  Artist Info  ")
 
         self._restore_active_tab()
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)

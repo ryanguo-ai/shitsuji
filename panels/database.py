@@ -69,6 +69,40 @@ _DDL = """
 
     CREATE INDEX IF NOT EXISTS idx_track_tags_track_id  ON track_tags (track_id);
     CREATE INDEX IF NOT EXISTS idx_track_tags_tag_name  ON track_tags (tag_name);
+
+    -- ------------------------------------------------------------------ --
+    -- artist_info                                                          --
+    -- Canonical artist records, optionally linked to a MusicBrainz ID.   --
+    -- ------------------------------------------------------------------ --
+    CREATE TABLE IF NOT EXISTS artist_info (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        name            TEXT    NOT NULL,
+        sort_name       TEXT,
+        country         TEXT,
+        musicbrainz_id  TEXT    UNIQUE,
+        created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_artist_info_name ON artist_info (name);
+    CREATE INDEX IF NOT EXISTS idx_artist_info_mb   ON artist_info (musicbrainz_id);
+
+    -- ------------------------------------------------------------------ --
+    -- artist_alias                                                         --
+    -- Alternative names / romanisations for an artist.                    --
+    -- ------------------------------------------------------------------ --
+    CREATE TABLE IF NOT EXISTS artist_alias (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        artist_id   INTEGER NOT NULL
+                        REFERENCES artist_info (id) ON DELETE CASCADE,
+        alias       TEXT    NOT NULL,
+        locale      TEXT,
+        alias_type  TEXT,
+
+        UNIQUE (artist_id, alias)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_artist_alias_artist_id ON artist_alias (artist_id);
+    CREATE INDEX IF NOT EXISTS idx_artist_alias_alias     ON artist_alias (alias);
 """
 
 
@@ -299,3 +333,121 @@ def delete_all_tags(track_id: int) -> None:
     """Remove all tags for a track."""
     with _connect() as conn:
         conn.execute("DELETE FROM track_tags WHERE track_id = ?", (track_id,))
+
+
+# ------------------------------------------------------------------ #
+# artist_info helpers                                                  #
+# ------------------------------------------------------------------ #
+
+def get_all_artists() -> list[sqlite3.Row]:
+    """Return all artist_info rows ordered by name."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM artist_info ORDER BY sort_name, name"
+        ).fetchall()
+
+
+def get_artist(artist_id: int) -> sqlite3.Row | None:
+    """Return a single artist_info row by primary key, or None."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM artist_info WHERE id = ?", (artist_id,)
+        ).fetchone()
+
+
+def upsert_artist(
+    name: str,
+    sort_name: str = "",
+    country: str = "",
+    musicbrainz_id: str = "",
+) -> int:
+    """Insert a new artist or update the existing row matched by musicbrainz_id.
+    Returns the row id."""
+    with _connect() as conn:
+        if musicbrainz_id:
+            conn.execute(
+                """
+                INSERT INTO artist_info (name, sort_name, country, musicbrainz_id)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(musicbrainz_id) DO UPDATE SET
+                    name      = excluded.name,
+                    sort_name = excluded.sort_name,
+                    country   = excluded.country
+                """,
+                (name, sort_name, country, musicbrainz_id),
+            )
+            row = conn.execute(
+                "SELECT id FROM artist_info WHERE musicbrainz_id = ?",
+                (musicbrainz_id,),
+            ).fetchone()
+        else:
+            conn.execute(
+                """
+                INSERT INTO artist_info (name, sort_name, country)
+                VALUES (?, ?, ?)
+                """,
+                (name, sort_name, country),
+            )
+            row = conn.execute("SELECT last_insert_rowid() AS id").fetchone()
+        return row["id"]
+
+
+def update_artist(
+    artist_id: int,
+    name: str,
+    sort_name: str = "",
+    country: str = "",
+    musicbrainz_id: str = "",
+) -> None:
+    """Update an existing artist_info row."""
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE artist_info
+               SET name = ?, sort_name = ?, country = ?, musicbrainz_id = ?
+             WHERE id = ?
+            """,
+            (name, sort_name, country, musicbrainz_id or None, artist_id),
+        )
+
+
+def delete_artist(artist_id: int) -> None:
+    """Delete an artist_info row (cascades to artist_alias)."""
+    with _connect() as conn:
+        conn.execute("DELETE FROM artist_info WHERE id = ?", (artist_id,))
+
+
+# ------------------------------------------------------------------ #
+# artist_alias helpers                                                 #
+# ------------------------------------------------------------------ #
+
+def get_aliases(artist_id: int) -> list[sqlite3.Row]:
+    """Return all aliases for an artist, ordered by alias text."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM artist_alias WHERE artist_id = ? ORDER BY alias",
+            (artist_id,),
+        ).fetchall()
+
+
+def add_alias(
+    artist_id: int,
+    alias: str,
+    locale: str = "",
+    alias_type: str = "",
+) -> None:
+    """Insert an alias; silently ignores duplicate (artist_id, alias) pairs."""
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO artist_alias (artist_id, alias, locale, alias_type)
+            VALUES (?, ?, ?, ?)
+            """,
+            (artist_id, alias, locale or None, alias_type or None),
+        )
+
+
+def delete_alias(alias_id: int) -> None:
+    """Delete an artist_alias row by its primary key."""
+    with _connect() as conn:
+        conn.execute("DELETE FROM artist_alias WHERE id = ?", (alias_id,))
