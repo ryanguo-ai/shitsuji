@@ -72,6 +72,8 @@ class ScanTab(tk.Frame):
         super().__init__(master, bg="#f5f5f5")
         self._settings = load_settings()
         self._on_compare = on_compare   # callable(src_path, lib_path) or None
+        self._sort_col: str | None = None   # currently sorted column id
+        self._sort_rev: bool = False        # True → descending
         self._build_ui()
 
     # ------------------------------------------------------------------ #
@@ -138,16 +140,17 @@ class ScanTab(tk.Frame):
             selectmode="extended",
         )
 
-        self.tree.heading("flibready",  text="Lib Ready",  anchor=tk.CENTER)
-        self.tree.heading("finlib",     text="In Lib",     anchor=tk.CENTER)
-        self.tree.heading("fpath",      text="Full Path",  anchor=tk.W)
-        self.tree.heading("ftype",      text="Type",       anchor=tk.W)
-        self.tree.heading("fartist",    text="Artist",     anchor=tk.W)
-        self.tree.heading("ftitle",     text="Title",      anchor=tk.W)
-        self.tree.heading("falbum",     text="Album",      anchor=tk.W)
-        self.tree.heading("fbitrate",   text="Bitrate",    anchor=tk.E)
-        self.tree.heading("fsize",      text="Size",       anchor=tk.E)
-        self.tree.heading("fmodified",  text="Modified",   anchor=tk.W)
+        _cmd = lambda c: (lambda: self._sort_column(c))
+        self.tree.heading("flibready",  text="Lib Ready",  anchor=tk.CENTER, command=_cmd("flibready"))
+        self.tree.heading("finlib",     text="In Lib",     anchor=tk.CENTER, command=_cmd("finlib"))
+        self.tree.heading("fpath",      text="Full Path",  anchor=tk.W,      command=_cmd("fpath"))
+        self.tree.heading("ftype",      text="Type",       anchor=tk.W,      command=_cmd("ftype"))
+        self.tree.heading("fartist",    text="Artist",     anchor=tk.W,      command=_cmd("fartist"))
+        self.tree.heading("ftitle",     text="Title",      anchor=tk.W,      command=_cmd("ftitle"))
+        self.tree.heading("falbum",     text="Album",      anchor=tk.W,      command=_cmd("falbum"))
+        self.tree.heading("fbitrate",   text="Bitrate",    anchor=tk.E,      command=_cmd("fbitrate"))
+        self.tree.heading("fsize",      text="Size",       anchor=tk.E,      command=_cmd("fsize"))
+        self.tree.heading("fmodified",  text="Modified",   anchor=tk.W,      command=_cmd("fmodified"))
 
         self.tree.column("flibready",  width=70,  anchor=tk.CENTER, stretch=False)
         self.tree.column("finlib",     width=55,  anchor=tk.CENTER, stretch=False)
@@ -197,6 +200,81 @@ class ScanTab(tk.Frame):
             font=("Segoe UI", 9), bg="#bdc3c7",
             anchor="w", padx=8,
         ).pack(fill=tk.X)
+
+    # ------------------------------------------------------------------ #
+    # Column sorting                                                       #
+    # ------------------------------------------------------------------ #
+
+    # Map column id → index in the values tuple
+    _COL_IDX = {
+        "flibready": 0, "finlib": 1, "fpath": 2, "ftype": 3,
+        "fartist": 4, "ftitle": 5, "falbum": 6,
+        "fbitrate": 7, "fsize": 8, "fmodified": 9,
+    }
+
+    _COL_LABELS = {
+        "flibready": "Lib Ready", "finlib": "In Lib", "fpath": "Full Path",
+        "ftype": "Type", "fartist": "Artist", "ftitle": "Title",
+        "falbum": "Album", "fbitrate": "Bitrate", "fsize": "Size",
+        "fmodified": "Modified",
+    }
+
+    @staticmethod
+    def _parse_size(val: str) -> float:
+        """Convert a human-readable size string (e.g. '1.5 MB') to bytes."""
+        units = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4, "PB": 1024**5}
+        parts = val.strip().split()
+        if len(parts) == 2:
+            try:
+                return float(parts[0]) * units.get(parts[1], 1)
+            except ValueError:
+                pass
+        return 0.0
+
+    @staticmethod
+    def _parse_bitrate(val: str) -> float:
+        """Convert a bitrate string (e.g. '1000 kbps') to a float."""
+        parts = val.strip().split()
+        if parts:
+            try:
+                return float(parts[0])
+            except ValueError:
+                pass
+        return 0.0
+
+    def _sort_column(self, col: str):
+        """Sort treeview rows by *col*, toggling direction on repeated clicks."""
+        if self._sort_col == col:
+            self._sort_rev = not self._sort_rev
+        else:
+            self._sort_col = col
+            self._sort_rev = False
+
+        # Build sort key depending on column type
+        if col == "fsize":
+            key_fn = lambda iid: self._parse_size(self.tree.set(iid, col))
+        elif col == "fbitrate":
+            key_fn = lambda iid: self._parse_bitrate(self.tree.set(iid, col))
+        else:
+            key_fn = lambda iid: self.tree.set(iid, col).lower()
+
+        items = sorted(self.tree.get_children(), key=key_fn, reverse=self._sort_rev)
+
+        for i, iid in enumerate(items):
+            self.tree.move(iid, "", i)
+
+        # Re-stripe rows while preserving special in-lib highlight tags
+        _special = {"inlib_exact", "inlib_diff", "notlib"}
+        for i, iid in enumerate(self.tree.get_children()):
+            current_tags = self.tree.item(iid, "tags")
+            if current_tags and current_tags[0] in _special:
+                continue  # leave colour-coded rows as-is
+            self.tree.item(iid, tags=("odd" if i % 2 == 0 else "even",))
+
+        # Update heading labels to show sort indicator; clear all others
+        arrow = " ▲" if not self._sort_rev else " ▼"
+        for c, label in self._COL_LABELS.items():
+            self.tree.heading(c, text=label + (arrow if c == col else ""))
 
     # ------------------------------------------------------------------ #
     # Layout persistence                                                   #
