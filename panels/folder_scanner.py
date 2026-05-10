@@ -461,6 +461,106 @@ class _DeleteFilesDialog(tk.Toplevel):
         self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
 
+class _PasteCoverArtDialog(tk.Toplevel):
+    """Preview clipboard image before embedding it into selected FLAC files.
+
+    Parameters
+    ----------
+    parent   : tk widget
+    img      : PIL.Image — the image read from the clipboard
+    img_bytes: bytes     — the encoded bytes that will actually be written (JPEG/PNG)
+    mime     : str       — "image/jpeg" or "image/png"
+    n_files  : int       — number of selected files that will be updated
+    """
+
+    def __init__(self, parent, img, img_bytes: bytes, mime: str, n_files: int):
+        super().__init__(parent)
+        self.confirmed = False
+        self._img       = img
+        self._img_bytes = img_bytes
+        self._mime      = mime
+        self._n_files   = n_files
+
+        self.title("Embed Cover Art from Clipboard — Preview")
+        self.configure(bg="#f5f5f5")
+        self.grab_set()
+        self.resizable(False, False)
+        self._build()
+        self._center()
+
+    def _build(self):
+        from PIL import ImageTk
+
+        # ── Header ── #
+        hdr = tk.Frame(self, bg="#2c3e50", pady=8, padx=12)
+        hdr.pack(fill=tk.X)
+        tk.Label(
+            hdr, text="🖼  Embed Cover Art from Clipboard",
+            font=("Segoe UI", 12, "bold"), fg="white", bg="#2c3e50",
+        ).pack(side=tk.LEFT)
+
+        body = tk.Frame(self, bg="#f5f5f5", padx=20, pady=16)
+        body.pack(fill=tk.BOTH)
+
+        # ── Image preview ── #
+        thumb = self._img.copy()
+        thumb.thumbnail((300, 300))
+        self._photo = ImageTk.PhotoImage(thumb)
+        tk.Label(body, image=self._photo, bg="#f5f5f5",
+                 relief="groove", bd=1).pack(pady=(0, 14))
+
+        # ── Metadata grid ── #
+        meta = tk.Frame(body, bg="#f5f5f5")
+        meta.pack(anchor="w")
+
+        def row(label, value, r):
+            tk.Label(meta, text=label, font=("Segoe UI", 9, "bold"),
+                     bg="#f5f5f5", anchor="e", width=12).grid(
+                row=r, column=0, sticky="e", pady=2, padx=(0, 8))
+            tk.Label(meta, text=value, font=("Segoe UI", 9),
+                     bg="#f5f5f5", anchor="w").grid(
+                row=r, column=1, sticky="w", pady=2)
+
+        w, h = self._img.size
+        fmt   = "JPEG" if self._mime == "image/jpeg" else "PNG"
+        ksize = len(self._img_bytes) / 1024
+        size_str = f"{ksize:.1f} KB" if ksize < 1024 else f"{ksize / 1024:.2f} MB"
+        n     = self._n_files
+
+        row("Dimensions:", f"{w} × {h} px", 0)
+        row("Format:",     fmt, 1)
+        row("Size:",       size_str, 2)
+        row("Apply to:",   f"{n} file{'s' if n != 1 else ''}", 3)
+
+        # ── Warning ── #
+        tk.Label(
+            body,
+            text="⚠  Any existing cover art in these files will be replaced.",
+            font=("Segoe UI", 8, "italic"), fg="#c0392b", bg="#f5f5f5",
+        ).pack(anchor="w", pady=(12, 0))
+
+        # ── Buttons ── #
+        btn_frame = tk.Frame(self, bg="#f5f5f5", pady=10, padx=12)
+        btn_frame.pack(fill=tk.X)
+        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(
+            side=tk.RIGHT, padx=(4, 0))
+        ttk.Button(
+            btn_frame,
+            text=f"🖼  Embed in {self._n_files} File{'s' if self._n_files != 1 else ''}",
+            command=self._confirm,
+        ).pack(side=tk.RIGHT)
+
+    def _confirm(self):
+        self.confirmed = True
+        self.destroy()
+
+    def _center(self):
+        self.update_idletasks()
+        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
+
 class ScanTab(tk.Frame, AudioMenuMixin):
 
     def __init__(self, master, on_compare=None, on_search_artist=None):
@@ -1088,6 +1188,107 @@ class ScanTab(tk.Frame, AudioMenuMixin):
                 f"{n_ok} deleted, {len(errors)} failed:\n\n" + "\n".join(errors[:10]),
             )
 
+    def _paste_cover_art_to_selected(self):
+        """Read an image from the clipboard and embed it into all selected FLAC files."""
+        from PIL import ImageGrab, Image
+        from mutagen.flac import FLAC, Picture
+
+        selected = self.tree.selection()
+        if not selected:
+            return
+
+        # ── Read clipboard image ── #
+        try:
+            img = ImageGrab.grabclipboard()
+        except Exception as exc:
+            messagebox.showerror("Clipboard error", str(exc), parent=self)
+            return
+
+        if not isinstance(img, Image.Image):
+            messagebox.showinfo(
+                "No image in clipboard",
+                "The clipboard does not contain an image.\n\n"
+                "Copy an image first, then try again.",
+                parent=self,
+            )
+            return
+
+        # ── Encode image ── #
+        import io as _io
+        buf = _io.BytesIO()
+        if img.mode in ("RGBA", "LA", "PA"):
+            img.save(buf, "PNG")
+            mime = "image/png"
+        else:
+            img_rgb = img.convert("RGB")
+            img_rgb.save(buf, "JPEG", quality=95)
+            mime = "image/jpeg"
+        img_bytes = buf.getvalue()
+
+        # Only offer FLAC files — warn about others
+        flac_paths, skipped = [], []
+        for iid in selected:
+            vals = self.tree.item(iid, "values")
+            path = vals[2]
+            if vals[3].upper() == "FLAC":
+                flac_paths.append(path)
+            else:
+                skipped.append(os.path.basename(path))
+
+        if not flac_paths:
+            messagebox.showinfo(
+                "No FLAC files selected",
+                "Cover art embedding is supported for FLAC files only.\n"
+                + (f"{len(skipped)} non-FLAC file(s) were skipped." if skipped else ""),
+                parent=self,
+            )
+            return
+
+        # ── Preview dialog ── #
+        dlg = _PasteCoverArtDialog(self, img, img_bytes, mime, len(flac_paths))
+        self.wait_window(dlg)
+        if not dlg.confirmed:
+            return
+
+        # ── Write to files ── #
+        log    = get_logger("scan_paste_cover")
+        errors = []
+        ok     = 0
+        w, h   = img.size
+        depth  = 32 if img.mode in ("RGBA", "LA") else 24
+
+        for path in flac_paths:
+            try:
+                flac = FLAC(path)
+                flac.clear_pictures()
+                pic          = Picture()
+                pic.type     = 3          # Front cover
+                pic.mime     = mime
+                pic.width    = w
+                pic.height   = h
+                pic.depth    = depth
+                pic.data     = img_bytes
+                flac.add_picture(pic)
+                flac.save()
+                ok += 1
+                log.info(f"Embedded cover art: {path}")
+            except Exception as exc:
+                errors.append(f"{os.path.basename(path)}: {exc}")
+                log.error(f"Cover art embed failed: {path} — {exc}")
+
+        # ── Status ── #
+        parts = [f"🖼  Cover art embedded in {ok} file{'s' if ok != 1 else ''}."]
+        if skipped:
+            parts.append(f"{len(skipped)} non-FLAC file(s) skipped.")
+        self.status_var.set("  ".join(parts))
+
+        if errors:
+            messagebox.showerror(
+                "Embed errors",
+                f"{ok} succeeded, {len(errors)} failed:\n\n" + "\n".join(errors[:10]),
+                parent=self,
+            )
+
     def _on_drop(self, event):
         log = get_logger("scan_drop")
         paths = self.tk.splitlist(event.data)
@@ -1160,6 +1361,13 @@ class ScanTab(tk.Frame, AudioMenuMixin):
             menu.add_command(
                 label=f"🗑  Delete {n} File{'s' if n != 1 else ''} from Disk",
                 command=self._delete_selected_files,
+            )
+            menu.add_separator()
+
+            # ── Paste cover art from clipboard ── #
+            menu.add_command(
+                label="🖼  Embed Cover Art from Clipboard",
+                command=self._paste_cover_art_to_selected,
             )
             menu.add_separator()
 
