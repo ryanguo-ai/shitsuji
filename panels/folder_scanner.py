@@ -570,6 +570,13 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self._on_search_artist = on_search_artist  # callable(artist_name) or None
         self._sort_col: str | None = None   # currently sorted column id
         self._sort_rev: bool = False        # True → descending
+        # Inline cell editing state
+        self._edit_entry    = None   # active tk.Entry overlay, or None
+        self._edit_iid      = None
+        self._edit_col_id   = None
+        self._edit_col_idx  = None
+        self._edit_orig_val = None
+        self._modified_iids: set = set()   # iids with unsaved tag changes
         self._build_ui()
 
     # ------------------------------------------------------------------ #
@@ -675,8 +682,10 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self.tree.tag_configure("inlib_exact", background="#eafaf1", foreground="#1e8449")  # green  — MD5 match
         self.tree.tag_configure("inlib_diff",  background="#fefce8", foreground="#92400e")  # amber  — metadata match, different file
         self.tree.tag_configure("notlib",      background="#fdf2f8", foreground="#922b21")
+        self.tree.tag_configure("modified",    background="#fff3cd", foreground="#7d5a00")  # warm yellow — unsaved edits
         self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
         self.tree.bind("<Button-3>", self._on_row_right_click)
+        self.tree.bind("<Double-1>", self._on_cell_double_click)
         self.tree.bind("<Delete>", self._on_delete_key)
         self.tree.bind("<Control-a>", lambda _: self.tree.selection_set(self.tree.get_children()))
         self._kb_sel = attach_keyboard_range_selection(self.tree)
@@ -1289,6 +1298,158 @@ class ScanTab(tk.Frame, AudioMenuMixin):
                 parent=self,
             )
 
+    # ------------------------------------------------------------------ #
+    # Inline cell editing (Artist / Title / Album)                        #
+    # ------------------------------------------------------------------ #
+
+    _EDITABLE_COLS = {"fartist", "ftitle", "falbum"}
+
+    def _on_cell_double_click(self, event):
+        # Commit any in-progress edit first
+        if self._edit_entry:
+            self._commit_cell_edit()
+
+        if self.tree.identify_region(event.x, event.y) != "cell":
+            return
+
+        col = self.tree.identify_column(event.x)   # "#N" (1-based)
+        iid = self.tree.identify_row(event.y)
+        if not iid or not col:
+            return
+
+        cols    = self.tree["columns"]
+        col_idx = int(col[1:]) - 1
+        col_id  = cols[col_idx]
+
+        if col_id not in self._EDITABLE_COLS:
+            return
+
+        self._start_cell_edit(iid, col, col_id, col_idx)
+        return "break"   # prevent default expand/collapse
+
+    def _start_cell_edit(self, iid, col, col_id, col_idx):
+        bbox = self.tree.bbox(iid, col)
+        if not bbox:
+            return   # row scrolled out of view
+
+        bx, by, bw, bh = bbox
+        val_idx = self._COL_IDX[col_id]
+        current = self.tree.item(iid, "values")[val_idx]
+
+        self._edit_iid      = iid
+        self._edit_col_id   = col_id
+        self._edit_col_idx  = val_idx
+        self._edit_orig_val = current
+
+        entry = tk.Entry(self.tree, font=("Segoe UI", 9), relief="flat",
+                         highlightthickness=1, highlightbackground="#2980b9",
+                         highlightcolor="#2980b9")
+        entry.insert(0, current)
+        entry.select_range(0, tk.END)
+        entry.place(x=bx, y=by, width=bw, height=bh)
+        entry.focus_set()
+
+        entry.bind("<Return>",   lambda _: self._commit_cell_edit())
+        entry.bind("<Tab>",      lambda _: self._commit_cell_edit())
+        entry.bind("<Escape>",   lambda _: self._cancel_cell_edit())
+        entry.bind("<FocusOut>", lambda _: self._commit_cell_edit())
+
+        self._edit_entry = entry
+
+    def _commit_cell_edit(self):
+        entry = self._edit_entry
+        if not entry:
+            return
+        # Nullify first to guard against re-entrance from FocusOut
+        self._edit_entry = None
+
+        new_val  = entry.get()
+        iid      = self._edit_iid
+        val_idx  = self._edit_col_idx
+        orig_val = self._edit_orig_val
+
+        entry.destroy()
+        self._edit_iid = self._edit_col_id = self._edit_col_idx = self._edit_orig_val = None
+
+        if new_val == orig_val:
+            return   # nothing changed
+
+        vals        = list(self.tree.item(iid, "values"))
+        vals[val_idx] = new_val
+        self.tree.item(iid, values=vals)
+
+        self._modified_iids.add(iid)
+        tags = [t for t in self.tree.item(iid, "tags") if t != "modified"]
+        tags.append("modified")
+        self.tree.item(iid, tags=tags)
+
+    def _cancel_cell_edit(self):
+        entry = self._edit_entry
+        if not entry:
+            return
+        self._edit_entry = None
+        entry.destroy()
+        self._edit_iid = self._edit_col_id = self._edit_col_idx = self._edit_orig_val = None
+
+    # ------------------------------------------------------------------ #
+    # Save pending tag edits to disk                                       #
+    # ------------------------------------------------------------------ #
+
+    def _save_pending_tag_edits(self):
+        """Write every pending in-place tag edit back to the audio file on disk."""
+        if not self._modified_iids:
+            return
+
+        from mutagen.flac import FLAC
+
+        log    = get_logger("scan_tag_edit")
+        errors = []
+        ok     = 0
+
+        for iid in list(self._modified_iids):
+            vals      = self.tree.item(iid, "values")
+            path      = vals[2]
+            file_type = vals[3].upper()
+            artist    = vals[4]
+            title     = vals[5]
+            album     = vals[6]
+            try:
+                if file_type == "FLAC":
+                    audio = FLAC(path)
+                else:
+                    from mutagen import File as MutagenFile
+                    audio = MutagenFile(path, easy=True)
+                    if audio is None:
+                        raise ValueError("Unsupported file format")
+
+                audio["artist"] = [artist]
+                audio["title"]  = [title]
+                audio["album"]  = [album]
+                audio.save()
+
+                ok += 1
+                self._modified_iids.discard(iid)
+                log.info(f"Saved tags: {path}")
+
+                # Remove "modified" tag; restore stripe colour
+                tags = [t for t in self.tree.item(iid, "tags") if t != "modified"]
+                self.tree.item(iid, tags=tags)
+
+            except Exception as exc:
+                errors.append(f"{os.path.basename(path)}: {exc}")
+                log.error(f"Tag save failed: {path} — {exc}")
+
+        self.status_var.set(
+            f"💾  Saved tags for {ok} file{'s' if ok != 1 else ''}."
+            + (f"  {len(errors)} error(s)." if errors else "")
+        )
+        if errors:
+            messagebox.showerror(
+                "Tag save errors",
+                f"{ok} saved, {len(errors)} failed:\n\n" + "\n".join(errors[:10]),
+                parent=self,
+            )
+
     def _on_drop(self, event):
         log = get_logger("scan_drop")
         paths = self.tk.splitlist(event.data)
@@ -1326,6 +1487,15 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         paths = [self.tree.item(i, "values")[2] for i in selected]
 
         def extra(menu, paths, audio_paths, flac_paths):
+            # ── Save pending tag edits ── #
+            if self._modified_iids:
+                n_mod = len(self._modified_iids)
+                menu.add_command(
+                    label=f"💾  Save Tag Changes ({n_mod} file{'s' if n_mod != 1 else ''})",
+                    command=self._save_pending_tag_edits,
+                )
+                menu.add_separator()
+
             # ── Search Artist in Artist Info ── #
             if len(selected) == 1 and self._on_search_artist is not None:
                 artist = (self.tree.item(item, "values")[4] or "").strip()

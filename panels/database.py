@@ -103,6 +103,18 @@ _DDL = """
 
     CREATE INDEX IF NOT EXISTS idx_artist_alias_artist_id ON artist_alias (artist_id);
     CREATE INDEX IF NOT EXISTS idx_artist_alias_alias     ON artist_alias (alias);
+
+    -- ------------------------------------------------------------------ --
+    -- track_ranking                                                        --
+    -- User-assigned 0-5 star/heart rating for a catalogued track.         --
+    -- ------------------------------------------------------------------ --
+    CREATE TABLE IF NOT EXISTS track_ranking (
+        track_id    INTEGER PRIMARY KEY
+                        REFERENCES track_info (id) ON DELETE CASCADE,
+        ranking     INTEGER NOT NULL DEFAULT 0
+                        CHECK (ranking BETWEEN 0 AND 5),
+        modified_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now'))
+    );
 """
 
 
@@ -242,15 +254,20 @@ def find_by_md5(file_md5: str) -> list[sqlite3.Row]:
 
 
 def get_track_info(partition: str | None = None) -> list[sqlite3.Row]:
-    """Return track_info rows, optionally filtered by partition."""
+    """Return track_info rows (with ranking), optionally filtered by partition."""
     with _connect() as conn:
+        base = """
+            SELECT ti.*, COALESCE(tr.ranking, 0) AS ranking
+              FROM track_info ti
+              LEFT JOIN track_ranking tr ON ti.id = tr.track_id
+        """
         if partition:
             return conn.execute(
-                "SELECT * FROM track_info WHERE partition = ? ORDER BY artist, album, title",
+                base + " WHERE ti.partition = ? ORDER BY ti.artist, ti.album, ti.title",
                 (partition,),
             ).fetchall()
         return conn.execute(
-            "SELECT * FROM track_info ORDER BY partition, artist, album, title"
+            base + " ORDER BY ti.partition, ti.artist, ti.album, ti.title"
         ).fetchall()
 
 
@@ -267,6 +284,34 @@ def find_track_by_metadata(artist: str, title: str, album: str) -> list[sqlite3.
             """,
             (artist, title, album),
         ).fetchall()
+
+
+# ------------------------------------------------------------------ #
+# track_ranking helpers                                                #
+# ------------------------------------------------------------------ #
+
+def set_track_ranking(track_id: int, ranking: int) -> None:
+    """Insert or update the 0-5 ranking for a track_info row."""
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO track_ranking (track_id, ranking, modified_at)
+            VALUES (?, ?, strftime('%Y-%m-%d %H:%M:%S', 'now'))
+            ON CONFLICT(track_id) DO UPDATE SET
+                ranking     = excluded.ranking,
+                modified_at = excluded.modified_at
+            """,
+            (track_id, max(0, min(5, ranking))),
+        )
+
+
+def get_track_ranking(track_id: int) -> int:
+    """Return the ranking (0-5) for a track_info row, defaulting to 0."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT ranking FROM track_ranking WHERE track_id = ?", (track_id,)
+        ).fetchone()
+        return int(row["ranking"]) if row else 0
 
 
 def delete_track_info(partition: str, rel_path: str) -> None:

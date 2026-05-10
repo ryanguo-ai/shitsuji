@@ -11,7 +11,7 @@ from mutagen.flac import FLAC
 
 from panels.audio_details_panel import AudioDetailsPanel
 from panels.audio_menu import AudioMenuMixin
-from panels.database import compute_file_md5, get_track_info, upsert_track_info
+from panels.database import compute_file_md5, get_track_info, upsert_track_info, set_track_ranking
 from panels.keyboard_selection import attach_keyboard_range_selection
 from panels.logger import get_logger
 from panels.settings_panel import load_settings, save_settings
@@ -32,17 +32,25 @@ def _fuzzy_match(query: str, target: str, threshold: float = 0.5) -> bool:
     return difflib.SequenceMatcher(None, q, t).ratio() >= threshold
 
 
+def _rank_emoji(r: int) -> str:
+    """Return a display string for a 0-5 ranking value."""
+    if r == 5:
+        return "❤️"
+    return "★" * r if r > 0 else ""
+
+
 class SearchTab(tk.Frame, AudioMenuMixin):
 
     # (col_id, heading_label, width, anchor, stretch)
     _COL_DEFS = [
-        ("partition", "Partition", 90,  tk.W, False),
-        ("rel_path",  "Full Path", 290, tk.W, True),
-        ("artist",    "Artist",    150, tk.W, False),
-        ("title",     "Title",     180, tk.W, False),
-        ("album",     "Album",     155, tk.W, False),
-        ("bitrate",   "Bitrate",   70,  tk.E, False),
-        ("updated",   "Updated",   130, tk.W, False),
+        ("rank",      "♥",          36,  tk.CENTER, False),
+        ("partition", "Partition",   90,  tk.W,      False),
+        ("rel_path",  "Full Path",  290,  tk.W,      True),
+        ("artist",    "Artist",     150,  tk.W,      False),
+        ("title",     "Title",      180,  tk.W,      False),
+        ("album",     "Album",      155,  tk.W,      False),
+        ("bitrate",   "Bitrate",     70,  tk.E,      False),
+        ("updated",   "Updated",    130,  tk.W,      False),
     ]
 
     def __init__(self, master):
@@ -219,6 +227,7 @@ class SearchTab(tk.Frame, AudioMenuMixin):
                     os.path.join(lib_root, d["partition"], d["rel_path"])
                     if lib_root else d["rel_path"]
                 )
+                d["ranking"] = int(d.get("ranking") or 0)
                 self._results.append(d)
 
         self._sort_col = None
@@ -257,8 +266,8 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         if not selected:
             return
         values    = self.tree.item(selected[0], "values")
-        partition = values[0]
-        full_path = values[1]
+        partition = values[1]   # rank is [0], partition is [1]
+        full_path = values[2]
         ext       = os.path.splitext(full_path)[1].lstrip(".").upper()
 
         if ext == "FLAC" and os.path.isfile(full_path):
@@ -287,11 +296,50 @@ class SearchTab(tk.Frame, AudioMenuMixin):
             self.tree.selection_set(item)
 
         selected = self.tree.selection()
-        # values[1] is the full path in the Search result table
-        paths = [self.tree.item(i, "values")[1] for i in selected]
+        # values[2] is the full path (rank=0, partition=1, full_path=2)
+        paths = [self.tree.item(i, "values")[2] for i in selected]
 
-        menu = self._build_audio_context_menu(paths)
+        def extra(menu, paths, audio_paths, flac_paths):
+            # ── Rate Track submenu ── #
+            rate_menu = tk.Menu(menu, tearoff=0)
+            _rank_labels = [
+                ("  0  —  Unranked", 0),
+                ("★  1",             1),
+                ("★★  2",            2),
+                ("★★★  3",           3),
+                ("★★★★  4",          4),
+                ("❤️  5  —  Loved",  5),
+            ]
+            for label, val in _rank_labels:
+                rate_menu.add_command(
+                    label=label,
+                    command=lambda v=val, iids=selected: self._apply_ranking(iids, v),
+                )
+            menu.add_cascade(label="⭐  Rate Track ▶", menu=rate_menu)
+            menu.add_separator()
+
+        menu = self._build_audio_context_menu(paths, extra_items_fn=extra)
         menu.tk_popup(event.x_root, event.y_root)
+
+    def _apply_ranking(self, iids, ranking: int):
+        """Persist a 0-5 ranking for each selected row and refresh the emoji."""
+        emoji = _rank_emoji(ranking)
+        for iid in iids:
+            # iid format is "ti_{track_info.id}"
+            try:
+                track_id = int(iid.split("_", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            set_track_ranking(track_id, ranking)
+            # Update result dict in memory
+            for r in self._results:
+                if r.get("id") == track_id:
+                    r["ranking"] = ranking
+                    break
+            # Refresh the visible tree cell (keep all other values)
+            vals = list(self.tree.item(iid, "values"))
+            vals[0] = emoji
+            self.tree.item(iid, values=vals)
 
     # ------------------------------------------------------------------ #
     # After-save: recompute MD5 and refresh DB                            #
@@ -336,17 +384,21 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         full_path = ""
+        ranking   = 0
         for row in self._results:
             if row.get("partition") == partition and row.get("rel_path") == rel_path:
                 row.update(artist=artist, title=title, album=album,
                            bitrate=bitrate, updated_at=updated)
                 full_path = row.get("full_path", "")
+                ranking   = int(row.get("ranking") or 0)
                 break
 
         for iid in self.tree.get_children():
             vals = self.tree.item(iid, "values")
-            if vals[0] == partition and vals[1] == full_path:
+            # rank=vals[0], partition=vals[1], full_path=vals[2]
+            if vals[1] == partition and vals[2] == full_path:
                 self.tree.item(iid, values=(
+                    _rank_emoji(ranking),
                     partition, full_path, artist, title, album, bitrate, updated,
                 ))
                 break
@@ -376,7 +428,9 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         for i, row in enumerate(page_rows):
             self.tree.insert(
                 "", "end",
+                iid=f"ti_{row['id']}",   # embed track_info id for fast lookup
                 values=(
+                    _rank_emoji(row.get("ranking", 0)),
                     row.get("partition",  "") or "",
                     row.get("full_path",  "") or "",
                     row.get("artist",     "") or "",
@@ -411,6 +465,7 @@ class SearchTab(tk.Frame, AudioMenuMixin):
     # ------------------------------------------------------------------ #
 
     _KEY_MAP = {
+        "rank":      "ranking",
         "partition": "partition", "rel_path": "full_path",
         "artist": "artist",       "title":    "title",
         "album":  "album",        "bitrate":  "bitrate",
@@ -425,10 +480,16 @@ class SearchTab(tk.Frame, AudioMenuMixin):
             self._sort_rev = False
 
         dict_key = self._KEY_MAP.get(col, col)
-        self._results.sort(
-            key=lambda r: (r.get(dict_key) or "").lower(),
-            reverse=self._sort_rev,
-        )
+        if dict_key == "ranking":
+            self._results.sort(
+                key=lambda r: int(r.get("ranking") or 0),
+                reverse=self._sort_rev,
+            )
+        else:
+            self._results.sort(
+                key=lambda r: (r.get(dict_key) or "").lower(),
+                reverse=self._sort_rev,
+            )
 
         self._page = 0
         self._show_page()
