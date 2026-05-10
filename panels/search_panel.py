@@ -145,6 +145,7 @@ class SearchTab(tk.Frame, AudioMenuMixin):
 
         self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
         self.tree.bind("<Button-3>",         self._on_row_right_click)
+        self.tree.bind("<Control-a>", lambda _: self.tree.selection_set(self.tree.get_children()))
 
         # Pagination (inside left pane, below tree)
         pag = tk.Frame(left, bg="#f5f5f5", pady=4)

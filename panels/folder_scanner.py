@@ -165,6 +165,186 @@ class _NormalizeResultWindow(tk.Toplevel):
         self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
 
+class _DeleteConfirmDialog(tk.Toplevel):
+    """Modal confirmation dialog for 'Remove Lib Duplicates'.
+
+    Shows two detailed lists:
+      • Files that will be permanently deleted (MD5 confirmed in lib) —
+        displays Artist, Title, Album, Type, Bitrate, Size, Scan path, Lib path.
+      • Files that will be skipped (MD5 not found / file missing / error) —
+        displays Artist, Title, Album, Type, Bitrate, Size, Full Path, Reason.
+
+    Sets ``self.confirmed = True`` when the user clicks the delete button.
+    """
+
+    # Column definitions: (id, heading, width, anchor)
+    _DEL_COLS = [
+        ("artist",   "Artist",         130, tk.W),
+        ("title",    "Title",          160, tk.W),
+        ("album",    "Album",          120, tk.W),
+        ("type",     "Type",            50, tk.W),
+        ("bitrate",  "Bitrate",         65, tk.E),
+        ("size",     "Size",            70, tk.E),
+        ("scan",     "Scan File Path", 300, tk.W),
+        ("lib",      "Library Path",   260, tk.W),
+    ]
+    _SKIP_COLS = [
+        ("artist",  "Artist",         130, tk.W),
+        ("title",   "Title",          160, tk.W),
+        ("album",   "Album",          120, tk.W),
+        ("type",    "Type",            50, tk.W),
+        ("bitrate", "Bitrate",         65, tk.E),
+        ("size",    "Size",            70, tk.E),
+        ("path",    "Full Path",      300, tk.W),
+        ("reason",  "Reason",         200, tk.W),
+    ]
+
+    def __init__(self, parent, to_delete: list, cant_delete: list):
+        super().__init__(parent)
+        self.confirmed = False
+        self._to_delete   = to_delete    # (item_id, full_path, lib_row dict, scan_vals tuple)
+        self._cant_delete = cant_delete  # (full_path, reason, scan_vals tuple)
+
+        self.title("Remove Lib Duplicates — Confirm")
+        self.configure(bg="#f5f5f5")
+        self.grab_set()
+        self.minsize(960, 580)
+        self.resizable(True, True)
+        self._build()
+        self._center()
+
+    def _build(self):
+        n_del  = len(self._to_delete)
+        n_skip = len(self._cant_delete)
+
+        # ── Header ── #
+        hdr = tk.Frame(self, bg="#c0392b", pady=8, padx=12)
+        hdr.pack(fill=tk.X)
+        tk.Label(
+            hdr, text="🗑  Remove Lib Duplicates",
+            font=("Segoe UI", 12, "bold"), fg="white", bg="#c0392b",
+        ).pack(side=tk.LEFT)
+
+        # ── Summary ── #
+        summ = tk.Frame(self, bg="#fdf2f2", padx=12, pady=6)
+        summ.pack(fill=tk.X)
+        tk.Label(
+            summ,
+            text=(
+                f"{n_del} file{'s' if n_del != 1 else ''} will be PERMANENTLY DELETED"
+                f"   ·   {n_skip} file{'s' if n_skip != 1 else ''} skipped"
+                f" (not confirmed in lib)"
+            ),
+            font=("Segoe UI", 9, "bold"), fg="#c0392b", bg="#fdf2f2",
+        ).pack(anchor="w")
+
+        # ── "Will delete" section ── #
+        tk.Label(
+            self,
+            text=f"Files to DELETE ({n_del})  — MD5 confirmed in library",
+            font=("Segoe UI", 9, "bold"), fg="#c0392b", bg="#f5f5f5",
+            anchor="w", padx=12, pady=(6, 0),
+        ).pack(fill=tk.X)
+
+        del_frame = tk.Frame(self, bg="#f5f5f5")
+        del_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 4))
+
+        col_ids = [c[0] for c in self._DEL_COLS]
+        del_tree = ttk.Treeview(
+            del_frame, columns=col_ids, show="headings",
+            selectmode="none", height=7,
+        )
+        for cid, heading, width, anchor in self._DEL_COLS:
+            del_tree.heading(cid, text=heading, anchor=anchor)
+            del_tree.column(cid, width=width, anchor=anchor, stretch=(cid in ("scan", "lib")))
+        del_tree.tag_configure("del", background="#fdf2f2")
+
+        vsb1 = ttk.Scrollbar(del_frame, orient=tk.VERTICAL,   command=del_tree.yview)
+        hsb1 = ttk.Scrollbar(del_frame, orient=tk.HORIZONTAL, command=del_tree.xview)
+        del_tree.configure(yscrollcommand=vsb1.set, xscrollcommand=hsb1.set)
+        vsb1.pack(side=tk.RIGHT, fill=tk.Y)
+        hsb1.pack(side=tk.BOTTOM, fill=tk.X)
+        del_tree.pack(fill=tk.BOTH, expand=True)
+
+        for _, full_path, lib_row, sv in self._to_delete:
+            lib_path = f"{lib_row['partition']} / {lib_row['rel_path']}"
+            del_tree.insert("", "end", tags=("del",), values=(
+                sv[4],       # Artist
+                sv[5],       # Title
+                sv[6],       # Album
+                sv[3],       # Type
+                sv[7],       # Bitrate
+                sv[8],       # Size
+                full_path,
+                lib_path,
+            ))
+
+        # ── "Skipped" section ── #
+        tk.Label(
+            self,
+            text=f"Files SKIPPED ({n_skip})  — not confirmed in library",
+            font=("Segoe UI", 9, "bold"), fg="#7f8c8d", bg="#f5f5f5",
+            anchor="w", padx=12, pady=(4, 0),
+        ).pack(fill=tk.X)
+
+        skip_frame = tk.Frame(self, bg="#f5f5f5")
+        skip_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 4))
+
+        skip_col_ids = [c[0] for c in self._SKIP_COLS]
+        skip_tree = ttk.Treeview(
+            skip_frame, columns=skip_col_ids, show="headings",
+            selectmode="none", height=5,
+        )
+        for cid, heading, width, anchor in self._SKIP_COLS:
+            skip_tree.heading(cid, text=heading, anchor=anchor)
+            skip_tree.column(cid, width=width, anchor=anchor, stretch=(cid in ("path", "reason")))
+
+        vsb2 = ttk.Scrollbar(skip_frame, orient=tk.VERTICAL,   command=skip_tree.yview)
+        hsb2 = ttk.Scrollbar(skip_frame, orient=tk.HORIZONTAL, command=skip_tree.xview)
+        skip_tree.configure(yscrollcommand=vsb2.set, xscrollcommand=hsb2.set)
+        vsb2.pack(side=tk.RIGHT, fill=tk.Y)
+        hsb2.pack(side=tk.BOTTOM, fill=tk.X)
+        skip_tree.pack(fill=tk.BOTH, expand=True)
+
+        for full_path, reason, sv in self._cant_delete:
+            skip_tree.insert("", "end", values=(
+                sv[4],       # Artist
+                sv[5],       # Title
+                sv[6],       # Album
+                sv[3],       # Type
+                sv[7],       # Bitrate
+                sv[8],       # Size
+                full_path,
+                reason,
+            ))
+
+        # ── Buttons ── #
+        btn_frame = tk.Frame(self, bg="#f5f5f5", pady=8, padx=12)
+        btn_frame.pack(fill=tk.X, side=tk.BOTTOM)
+        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(
+            side=tk.RIGHT, padx=(4, 0))
+        del_label = (
+            f"🗑  Delete {n_del} File{'s' if n_del != 1 else ''}"
+            if n_del else "Nothing to Delete"
+        )
+        ttk.Button(
+            btn_frame, text=del_label,
+            command=self._confirm,
+            state="normal" if n_del else "disabled",
+        ).pack(side=tk.RIGHT)
+
+    def _confirm(self):
+        self.confirmed = True
+        self.destroy()
+
+    def _center(self):
+        self.update_idletasks()
+        w = max(self.winfo_reqwidth(),  720)
+        h = max(self.winfo_reqheight(), 520)
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
+
 class ScanTab(tk.Frame, AudioMenuMixin):
 
     def __init__(self, master, on_compare=None):
@@ -194,8 +374,9 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         row = tk.Frame(self, bg="#f5f5f5", pady=10, padx=16)
         row.pack(fill=tk.X)
 
-        ttk.Button(row, text="Check Tracks",       command=self._check_tracks).pack(side=tk.LEFT)
-        ttk.Button(row, text="Normalize File Name", command=self._normalize_filenames).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(row, text="Check Tracks",         command=self._check_tracks).pack(side=tk.LEFT)
+        ttk.Button(row, text="Normalize File Name",   command=self._normalize_filenames).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(row, text="Remove Lib Duplicates", command=self._remove_lib_duplicates).pack(side=tk.LEFT, padx=(8, 0))
 
         # ── Options row ───────────────────────────────────────────────── #
         opts = tk.Frame(self, bg="#f5f5f5", padx=16)
@@ -280,6 +461,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
         self.tree.bind("<Button-3>", self._on_row_right_click)
         self.tree.bind("<Delete>", self._on_delete_key)
+        self.tree.bind("<Control-a>", lambda _: self.tree.selection_set(self.tree.get_children()))
 
         self.tree.drop_target_register(DND_FILES)
         self.tree.dnd_bind("<<Drop>>", self._on_drop)
@@ -502,6 +684,119 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self.status_var.set(
             f"Check complete — {ready}/{total} lib-ready · {found}/{total} in lib."
         )
+
+    # ------------------------------------------------------------------ #
+    # Remove Lib Duplicates                                                #
+    # ------------------------------------------------------------------ #
+
+    def _remove_lib_duplicates(self):
+        """Verify scan files against library MD5s and delete confirmed duplicates.
+
+        Processes selected rows if any are selected, otherwise all rows.
+        Re-computes MD5 for each file and compares against the DB; only files
+        with an exact MD5 match qualify for deletion.  Shows a confirmation
+        dialog before touching anything on disk.
+        """
+        from panels.database import get_track_info, compute_file_md5
+
+        selected = self.tree.selection()
+        items    = selected if selected else self.tree.get_children()
+        if not items:
+            self.status_var.set("No tracks in list.")
+            return
+
+        self.status_var.set("Loading library MD5 index…")
+        self.update_idletasks()
+
+        # Build md5 → lib row lookup (single DB query)
+        md5_to_lib: dict[str, object] = {}
+        for row in get_track_info():
+            if row["file_md5"]:
+                md5_to_lib[row["file_md5"].strip().lower()] = row
+
+        # Classify each scan row
+        # to_delete  : (item_id, full_path, lib_row dict, scan_vals tuple)
+        # cant_delete: (full_path, reason, scan_vals tuple)
+        to_delete:   list[tuple] = []
+        cant_delete: list[tuple] = []
+
+        total = len(items)
+        for i, item in enumerate(items):
+            vals      = self.tree.item(item, "values")
+            full_path = vals[2]
+
+            if not os.path.isfile(full_path):
+                cant_delete.append((full_path, "File not found on disk", vals))
+                continue
+
+            try:
+                md5 = compute_file_md5(full_path).lower()
+            except Exception as exc:
+                cant_delete.append((full_path, f"MD5 error: {exc}", vals))
+                continue
+
+            if md5 in md5_to_lib:
+                lib_row = md5_to_lib[md5]
+                to_delete.append((item, full_path, lib_row, vals))
+            else:
+                cant_delete.append((full_path, "MD5 not found in library", vals))
+
+            if (i + 1) % 5 == 0:
+                self.status_var.set(f"Verifying MD5… {i + 1}/{total}")
+                self.update_idletasks()
+
+        self.status_var.set("Verification complete — review and confirm below.")
+
+        if not to_delete and not cant_delete:
+            messagebox.showinfo("Remove Lib Duplicates", "No items to process.")
+            return
+
+        # ── Show confirmation dialog (modal) ── #
+        dlg = _DeleteConfirmDialog(self.winfo_toplevel(), to_delete, cant_delete)
+        self.wait_window(dlg)
+
+        if not dlg.confirmed:
+            self.status_var.set("Deletion cancelled.")
+            return
+
+        # ── Execute deletions ── #
+        deleted_items: list = []
+        delete_errors: list[tuple[str, str]] = []
+
+        for item, full_path, _ in to_delete:
+            try:
+                os.remove(full_path)
+                deleted_items.append(item)
+            except OSError as exc:
+                delete_errors.append((full_path, str(exc)))
+
+        # Remove deleted rows from tree and re-stripe
+        for item in deleted_items:
+            self.tree.delete(item)
+
+        _special = {"inlib_exact", "inlib_diff", "notlib"}
+        for i, iid in enumerate(self.tree.get_children()):
+            current_tags = self.tree.item(iid, "tags")
+            if not (current_tags and current_tags[0] in _special):
+                self.tree.item(iid, tags=("odd" if i % 2 == 0 else "even",))
+
+        n_del = len(deleted_items)
+        n_err = len(delete_errors)
+
+        if delete_errors:
+            messagebox.showerror(
+                "Deletion Errors",
+                f"{n_err} file(s) could not be deleted:\n\n"
+                + "\n".join(f"• {p}\n  {e}" for p, e in delete_errors[:8]),
+            )
+
+        remaining = len(self.tree.get_children())
+        self.status_var.set(
+            f"Deleted {n_del} file{'s' if n_del != 1 else ''}"
+            + (f", {n_err} deletion error{'s' if n_err != 1 else ''}" if n_err else "")
+            + f" — {remaining} remaining."
+        )
+        self.footer_var.set(f"{remaining} file{'s' if remaining != 1 else ''} in list.")
 
     # ------------------------------------------------------------------ #
     # Normalize file names                                                 #
