@@ -217,17 +217,22 @@ class _DeleteConfirmDialog(tk.Toplevel):
         n_del  = len(self._to_delete)
         n_skip = len(self._cant_delete)
 
-        # ── Header ── #
+        # Use grid on the Toplevel so row weights control vertical expansion.
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(3, weight=3)   # delete table  → 3/5 of extra space
+        self.rowconfigure(5, weight=2)   # skipped table → 2/5 of extra space
+
+        # ── Row 0: Header ── #
         hdr = tk.Frame(self, bg="#c0392b", pady=8, padx=12)
-        hdr.pack(fill=tk.X)
+        hdr.grid(row=0, column=0, sticky="ew")
         tk.Label(
             hdr, text="🗑  Remove Lib Duplicates",
             font=("Segoe UI", 12, "bold"), fg="white", bg="#c0392b",
         ).pack(side=tk.LEFT)
 
-        # ── Summary ── #
+        # ── Row 1: Summary banner ── #
         summ = tk.Frame(self, bg="#fdf2f2", padx=12, pady=6)
-        summ.pack(fill=tk.X)
+        summ.grid(row=1, column=0, sticky="ew")
         tk.Label(
             summ,
             text=(
@@ -238,89 +243,81 @@ class _DeleteConfirmDialog(tk.Toplevel):
             font=("Segoe UI", 9, "bold"), fg="#c0392b", bg="#fdf2f2",
         ).pack(anchor="w")
 
-        # ── "Will delete" section ── #
+        # ── Row 2: Delete section label ── #
         tk.Label(
             self,
-            text=f"Files to DELETE ({n_del})  — MD5 confirmed in library",
+            text=f"  Files to DELETE ({n_del})  — MD5 confirmed in library",
             font=("Segoe UI", 9, "bold"), fg="#c0392b", bg="#f5f5f5",
-            anchor="w", padx=12, pady=(6, 0),
-        ).pack(fill=tk.X)
+            anchor="w", pady=4,
+        ).grid(row=2, column=0, sticky="ew")
 
+        # ── Row 3: Delete table (expands) ── #
         del_frame = tk.Frame(self, bg="#f5f5f5")
-        del_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 4))
+        del_frame.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 4))
+        del_frame.columnconfigure(0, weight=1)
+        del_frame.rowconfigure(0, weight=1)
 
         col_ids = [c[0] for c in self._DEL_COLS]
-        del_tree = ttk.Treeview(
-            del_frame, columns=col_ids, show="headings",
-            selectmode="none", height=7,
-        )
+        del_tree = ttk.Treeview(del_frame, columns=col_ids, show="headings",
+                                selectmode="none")
         for cid, heading, width, anchor in self._DEL_COLS:
             del_tree.heading(cid, text=heading, anchor=anchor)
-            del_tree.column(cid, width=width, anchor=anchor, stretch=(cid in ("scan", "lib")))
+            del_tree.column(cid, width=width, anchor=anchor,
+                            stretch=(cid in ("scan", "lib")))
         del_tree.tag_configure("del", background="#fdf2f2")
 
         vsb1 = ttk.Scrollbar(del_frame, orient=tk.VERTICAL,   command=del_tree.yview)
         hsb1 = ttk.Scrollbar(del_frame, orient=tk.HORIZONTAL, command=del_tree.xview)
         del_tree.configure(yscrollcommand=vsb1.set, xscrollcommand=hsb1.set)
-        vsb1.pack(side=tk.RIGHT, fill=tk.Y)
-        hsb1.pack(side=tk.BOTTOM, fill=tk.X)
-        del_tree.pack(fill=tk.BOTH, expand=True)
+        del_tree.grid(row=0, column=0, sticky="nsew")
+        vsb1.grid(row=0, column=1, sticky="ns")
+        hsb1.grid(row=1, column=0, sticky="ew")
 
         for _, full_path, lib_row, sv in self._to_delete:
             lib_path = f"{lib_row['partition']} / {lib_row['rel_path']}"
             del_tree.insert("", "end", tags=("del",), values=(
-                sv[4],       # Artist
-                sv[5],       # Title
-                sv[6],       # Album
-                sv[3],       # Type
-                sv[7],       # Bitrate
-                sv[8],       # Size
-                full_path,
-                lib_path,
+                sv[4], sv[5], sv[6], sv[3], sv[7], sv[8],
+                full_path, lib_path,
             ))
 
-        # ── "Skipped" section ── #
+        # ── Row 4: Skipped section label ── #
         tk.Label(
             self,
-            text=f"Files SKIPPED ({n_skip})  — not confirmed in library",
+            text=f"  Files SKIPPED ({n_skip})  — not confirmed in library",
             font=("Segoe UI", 9, "bold"), fg="#7f8c8d", bg="#f5f5f5",
-            anchor="w", padx=12, pady=(4, 0),
-        ).pack(fill=tk.X)
+            anchor="w", pady=4,
+        ).grid(row=4, column=0, sticky="ew")
 
+        # ── Row 5: Skipped table (expands) ── #
         skip_frame = tk.Frame(self, bg="#f5f5f5")
-        skip_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(2, 4))
+        skip_frame.grid(row=5, column=0, sticky="nsew", padx=12, pady=(0, 4))
+        skip_frame.columnconfigure(0, weight=1)
+        skip_frame.rowconfigure(0, weight=1)
 
         skip_col_ids = [c[0] for c in self._SKIP_COLS]
-        skip_tree = ttk.Treeview(
-            skip_frame, columns=skip_col_ids, show="headings",
-            selectmode="none", height=5,
-        )
+        skip_tree = ttk.Treeview(skip_frame, columns=skip_col_ids, show="headings",
+                                 selectmode="none")
         for cid, heading, width, anchor in self._SKIP_COLS:
             skip_tree.heading(cid, text=heading, anchor=anchor)
-            skip_tree.column(cid, width=width, anchor=anchor, stretch=(cid in ("path", "reason")))
+            skip_tree.column(cid, width=width, anchor=anchor,
+                             stretch=(cid in ("path", "reason")))
 
         vsb2 = ttk.Scrollbar(skip_frame, orient=tk.VERTICAL,   command=skip_tree.yview)
         hsb2 = ttk.Scrollbar(skip_frame, orient=tk.HORIZONTAL, command=skip_tree.xview)
         skip_tree.configure(yscrollcommand=vsb2.set, xscrollcommand=hsb2.set)
-        vsb2.pack(side=tk.RIGHT, fill=tk.Y)
-        hsb2.pack(side=tk.BOTTOM, fill=tk.X)
-        skip_tree.pack(fill=tk.BOTH, expand=True)
+        skip_tree.grid(row=0, column=0, sticky="nsew")
+        vsb2.grid(row=0, column=1, sticky="ns")
+        hsb2.grid(row=1, column=0, sticky="ew")
 
         for full_path, reason, sv in self._cant_delete:
             skip_tree.insert("", "end", values=(
-                sv[4],       # Artist
-                sv[5],       # Title
-                sv[6],       # Album
-                sv[3],       # Type
-                sv[7],       # Bitrate
-                sv[8],       # Size
-                full_path,
-                reason,
+                sv[4], sv[5], sv[6], sv[3], sv[7], sv[8],
+                full_path, reason,
             ))
 
-        # ── Buttons ── #
+        # ── Row 6: Buttons ── #
         btn_frame = tk.Frame(self, bg="#f5f5f5", pady=8, padx=12)
-        btn_frame.pack(fill=tk.X, side=tk.BOTTOM)
+        btn_frame.grid(row=6, column=0, sticky="ew")
         ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(
             side=tk.RIGHT, padx=(4, 0))
         del_label = (
