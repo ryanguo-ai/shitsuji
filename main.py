@@ -44,8 +44,9 @@ class App(TkinterDnD.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._build_toolbar()
+        self._apply_styles()
 
-        self._notebook = ttk.Notebook(self)
+        self._notebook = ttk.Notebook(self, style="App.TNotebook")
         self._notebook.pack(fill=tk.BOTH, expand=True)
 
         self._compare_tab = CompareTracksTab(
@@ -63,6 +64,37 @@ class App(TkinterDnD.Tk):
 
         self._restore_active_tab()
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+    # ------------------------------------------------------------------ #
+    # Styles                                                               #
+    # ------------------------------------------------------------------ #
+
+    def _apply_styles(self) -> None:
+        style = ttk.Style(self)
+
+        # Switch to 'clam' theme — the Windows 'vista' native theme draws
+        # tabs using OS visual styles and ignores style.map() colour/font
+        # overrides entirely.  'clam' uses pure Tk rendering so every
+        # configure/map property works as expected.
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+
+        _DARK = "#2c3e50"   # same as the Shitsuji toolbar bar
+
+        style.configure("App.TNotebook", background="#f5f5f5")
+        style.configure(
+            "App.TNotebook.Tab",
+            background="#d0d3d4",
+            foreground=_DARK,
+            padding=[14, 5],
+            font=("Segoe UI", 9),
+        )
+        style.map(
+            "App.TNotebook.Tab",
+            background=[("selected", _DARK),     ("active", "#95a5a6")],
+            foreground=[("selected", "#ffffff"),  ("active", _DARK)],
+            font=[("selected", ("Segoe UI", 9, "bold"))],
+        )
 
     # ------------------------------------------------------------------ #
     # Toolbar                                                              #
