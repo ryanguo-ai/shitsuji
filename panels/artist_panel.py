@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import threading
 import tkinter as tk
+import webbrowser
 from tkinter import messagebox, simpledialog, ttk
 
 from panels.database import (
@@ -24,6 +25,7 @@ from panels.database import (
     delete_artist,
     get_aliases,
     get_all_artists,
+    search_artists_local,
     update_artist,
     upsert_artist,
 )
@@ -251,7 +253,6 @@ class ArtistTab(tk.Frame):
         super().__init__(master, bg="#f5f5f5")
         self._selected_artist_id: int | None = None
         self._build_ui()
-        self._refresh_artist_list()
 
     # ------------------------------------------------------------------ #
     # UI construction                                                      #
@@ -275,11 +276,14 @@ class ArtistTab(tk.Frame):
         self._search_var = tk.StringVar()
         entry = ttk.Entry(act, textvariable=self._search_var, width=28)
         entry.pack(side=tk.LEFT, padx=(4, 10))
-        entry.bind("<Return>", lambda _: self._on_mb_search())
+        entry.bind("<Return>", lambda _: self._on_search_in_lib())
 
         ttk.Button(
             act, text="🔍 Search MusicBrainz", command=self._on_mb_search,
         ).pack(side=tk.LEFT)
+        ttk.Button(
+            act, text="📂 Search in Lib", command=self._on_search_in_lib,
+        ).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(
             act, text="+ Add Manually", command=self._on_add_manual,
         ).pack(side=tk.LEFT, padx=(8, 0))
@@ -310,7 +314,7 @@ class ArtistTab(tk.Frame):
         # ── Bottom status bar ─────────────────────────────────────────── #
         bar = tk.Frame(self, bg="#bdc3c7", height=24)
         bar.pack(fill=tk.X, side=tk.BOTTOM)
-        self._footer_var = tk.StringVar(value="Ready.")
+        self._footer_var = tk.StringVar(value="Click 'Search in Lib' to load artists from the database.")
         tk.Label(
             bar, textvariable=self._footer_var,
             font=("Segoe UI", 9), bg="#bdc3c7",
@@ -350,6 +354,8 @@ class ArtistTab(tk.Frame):
         self._artist_tree.tag_configure("even", background="#ecf0f1")
 
         self._artist_tree.bind("<<TreeviewSelect>>", self._on_artist_select)
+        self._artist_tree.bind("<Button-1>",         self._on_artist_click)
+        self._artist_tree.bind("<Motion>",           self._on_artist_motion)
         attach_keyboard_range_selection(self._artist_tree)
 
         # Delete button below list
@@ -442,9 +448,12 @@ class ArtistTab(tk.Frame):
     # Data loading                                                         #
     # ------------------------------------------------------------------ #
 
-    def _refresh_artist_list(self) -> None:
+    def _on_search_in_lib(self) -> None:
+        self._refresh_artist_list(self._search_var.get())
+
+    def _refresh_artist_list(self, query: str = "") -> None:
         self._artist_tree.delete(*self._artist_tree.get_children())
-        artists = get_all_artists()
+        artists = search_artists_local(query)
         for i, a in enumerate(artists):
             self._artist_tree.insert(
                 "", "end",
@@ -492,6 +501,28 @@ class ArtistTab(tk.Frame):
         self._mb_id_var.set(vals[3])
 
         self._refresh_alias_list(artist_id)
+
+    _MB_ID_COL = "#4"   # mb_id is the 4th column in the artist tree
+
+    def _mb_id_at(self, event) -> str:
+        """Return the MB ID string under the mouse, or '' if not over that column."""
+        tree = self._artist_tree
+        if tree.identify_column(event.x) != self._MB_ID_COL:
+            return ""
+        item = tree.identify_row(event.y)
+        if not item:
+            return ""
+        return tree.item(item, "values")[3]   # index 3 = mb_id
+
+    def _on_artist_click(self, event) -> None:
+        mb_id = self._mb_id_at(event)
+        if mb_id:
+            url = f"https://musicbrainz.org/artist/{mb_id}"
+            webbrowser.open(url)
+
+    def _on_artist_motion(self, event) -> None:
+        cursor = "hand2" if self._mb_id_at(event) else ""
+        self._artist_tree.configure(cursor=cursor)
 
     def _on_mb_search(self) -> None:
         query = self._search_var.get().strip()

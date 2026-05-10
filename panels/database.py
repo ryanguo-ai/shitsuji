@@ -347,6 +347,32 @@ def get_all_artists() -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def search_artists_local(query: str) -> list[sqlite3.Row]:
+    """Return artist_info rows whose name, sort_name, or any alias contains *query*.
+
+    Matching is case-insensitive substring.  An empty *query* returns all rows.
+    Results are de-duplicated and ordered by sort_name, name.
+    """
+    with _connect() as conn:
+        if not query or not query.strip():
+            return conn.execute(
+                "SELECT * FROM artist_info ORDER BY sort_name, name"
+            ).fetchall()
+        pattern = f"%{query.strip()}%"
+        return conn.execute(
+            """
+            SELECT DISTINCT ai.*
+              FROM artist_info ai
+              LEFT JOIN artist_alias aa ON aa.artist_id = ai.id
+             WHERE ai.name      LIKE ? COLLATE NOCASE
+                OR ai.sort_name LIKE ? COLLATE NOCASE
+                OR aa.alias     LIKE ? COLLATE NOCASE
+             ORDER BY ai.sort_name, ai.name
+            """,
+            (pattern, pattern, pattern),
+        ).fetchall()
+
+
 def get_artist(artist_id: int) -> sqlite3.Row | None:
     """Return a single artist_info row by primary key, or None."""
     with _connect() as conn:
