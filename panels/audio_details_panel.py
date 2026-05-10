@@ -102,7 +102,7 @@ class AudioDetailsPanel(tk.Frame):
         self._tag_tree.bind("<Double-1>", self._start_edit)
         self._tag_tree.bind("<Delete>",   self._mark_deleted)
 
-        # Save / Copy buttons
+        # Save / Copy / Add Tag buttons
         btn_frame = tk.Frame(self, bg="#f0f0f0")
         btn_frame.pack(fill=tk.X, padx=4, pady=4)
         self._save_btn = ttk.Button(
@@ -114,6 +114,10 @@ class AudioDetailsPanel(tk.Frame):
             btn_frame, text="Copy JSON",
             command=self._copy_tags_json,
         ).pack(side=tk.RIGHT, padx=(0, 4))
+        ttk.Button(
+            btn_frame, text="+ Add Tag",
+            command=self._add_tag_dialog,
+        ).pack(side=tk.LEFT)
 
     # ------------------------------------------------------------------ #
     # Inline editing                                                       #
@@ -207,6 +211,92 @@ class AudioDetailsPanel(tk.Frame):
         }
         self.clipboard_clear()
         self.clipboard_append(json.dumps(data, ensure_ascii=False, indent=2))
+
+    # ------------------------------------------------------------------ #
+    # Add new tag                                                          #
+    # ------------------------------------------------------------------ #
+
+    # Common FLAC tag names offered in the dropdown
+    _COMMON_TAGS = [
+        "TITLE", "ARTIST", "ALBUM", "ALBUMARTIST", "DATE", "YEAR",
+        "TRACKNUMBER", "TOTALTRACKS", "DISCNUMBER", "TOTALDISCS",
+        "GENRE", "COMMENT", "COMPOSER", "CONDUCTOR", "LYRICIST",
+        "LYRICS", "DESCRIPTION", "LABEL", "ISRC", "BARCODE",
+        "REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_ALBUM_GAIN",
+    ]
+
+    def _add_tag_dialog(self):
+        """Open a small dialog to enter a new tag name + value."""
+        if not self._current_path:
+            return
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Add Tag")
+        dlg.configure(bg="#f5f5f5")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        pad = {"padx": 10, "pady": 6}
+
+        tk.Label(dlg, text="Tag name:", font=("Segoe UI", 9),
+                 bg="#f5f5f5", anchor="w").grid(row=0, column=0, sticky="w", **pad)
+        name_var = tk.StringVar()
+        name_cb = ttk.Combobox(dlg, textvariable=name_var,
+                               values=self._COMMON_TAGS, width=22)
+        name_cb.grid(row=0, column=1, sticky="ew", **pad)
+
+        tk.Label(dlg, text="Value:", font=("Segoe UI", 9),
+                 bg="#f5f5f5", anchor="w").grid(row=1, column=0, sticky="w", **pad)
+        val_var = tk.StringVar()
+        val_entry = ttk.Entry(dlg, textvariable=val_var, width=24)
+        val_entry.grid(row=1, column=1, sticky="ew", **pad)
+
+        # Error label (hidden until needed)
+        err_var = tk.StringVar()
+        err_lbl = tk.Label(dlg, textvariable=err_var,
+                           font=("Segoe UI", 8), fg="#c0392b", bg="#f5f5f5")
+        err_lbl.grid(row=2, column=0, columnspan=2, sticky="w", padx=10)
+
+        btn_row = tk.Frame(dlg, bg="#f5f5f5")
+        btn_row.grid(row=3, column=0, columnspan=2, sticky="e", padx=8, pady=(0, 8))
+
+        def commit(_=None):
+            tag  = name_var.get().strip().upper()
+            val  = val_var.get().strip()
+            if not tag:
+                err_var.set("Tag name is required.")
+                name_cb.focus_set()
+                return
+            # Check for duplicate tag name
+            existing = [
+                self._tag_tree.item(iid, "values")[0].upper()
+                for iid in self._tag_tree.get_children()
+                if iid not in self._deleted_items
+            ]
+            if tag in existing:
+                err_var.set(f'Tag "{tag}" already exists — edit it in the list.')
+                return
+            self._tag_tree.insert("", "end", values=(tag, val))
+            self._mark_dirty()
+            dlg.destroy()
+
+        ttk.Button(btn_row, text="Cancel", command=dlg.destroy).pack(side=tk.RIGHT, padx=(4, 0))
+        ttk.Button(btn_row, text="Add",    command=commit).pack(side=tk.RIGHT)
+
+        # Enter in either field commits
+        name_cb.bind("<Return>", commit)
+        val_entry.bind("<Return>", commit)
+        # Tab from name → value
+        name_cb.bind("<Tab>", lambda _: (val_entry.focus_set(), "break"))
+
+        dlg.columnconfigure(1, weight=1)
+        dlg.update_idletasks()
+        # Centre over the panel
+        x = self.winfo_rootx() + (self.winfo_width()  - dlg.winfo_reqwidth())  // 2
+        y = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_reqheight()) // 2
+        dlg.geometry(f"+{x}+{y}")
+
+        name_cb.focus_set()
 
     def _mark_dirty(self):
         self._dirty = True

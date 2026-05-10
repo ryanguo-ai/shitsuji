@@ -106,7 +106,7 @@ def _read_tags(path: str) -> tuple[str, str, str]:
 
 
 def _check_lib_ready(path: str) -> bool:
-    """Return True if ARTIST/TITLE/ALBUM tags are present AND cover > 320×320."""
+    """Return True if ARTIST/TITLE/ALBUM tags are present AND cover > 300×300."""
     try:
         from PIL import Image
         flac = FLAC(path)
@@ -117,7 +117,7 @@ def _check_lib_ready(path: str) -> bool:
             return False
         for pic in flac.pictures:
             img = Image.open(io.BytesIO(pic.data))
-            if img.width > 320 and img.height > 320:
+            if img.width >= 300 and img.height >= 300:
                 return True
         return False
     except Exception:
@@ -258,6 +258,7 @@ class SendToLibPanel(tk.Toplevel):
         self._tree.tag_configure("even",     background="#f8f9fa")
         self._tree.tag_configure("warn",     background="#fff8e1", foreground="#856404")
         self._tree.tag_configure("notready", background="#fde8e8", foreground="#922b21")
+        self._tree.tag_configure("inlib",    background="#fef3e2", foreground="#7d4e00")
 
         self._tree.bind("<Delete>", lambda _: self._remove_selected())
 
@@ -282,6 +283,10 @@ class SendToLibPanel(tk.Toplevel):
             bar, text="🗑  Remove Selected",
             command=self._remove_selected,
         ).pack(side=tk.LEFT)
+        ttk.Button(
+            bar, text="⚠  Remove Blocking Rows",
+            command=self._remove_blocking,
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
     # ------------------------------------------------------------------ #
     # Data                                                                 #
@@ -294,7 +299,8 @@ class SendToLibPanel(tk.Toplevel):
 
         md5_set, aat_set = _build_lib_index()
 
-        not_ready = 0
+        not_ready   = 0
+        already_lib = 0
         for i, src in enumerate(self._paths):
             ext    = os.path.splitext(src)[1]
             fname  = os.path.basename(src)
@@ -306,6 +312,8 @@ class SendToLibPanel(tk.Toplevel):
             ready_icon = "✅" if ready else "❌"
             if not ready:
                 not_ready += 1
+            if inlib in ("🟢", "🟡"):
+                already_lib += 1
 
             dest_full = compute_dest_full_path(
                 self._lib_root, self._partition, artist, album, title, ext
@@ -313,6 +321,8 @@ class SendToLibPanel(tk.Toplevel):
 
             if not ready:
                 row_tag = "notready"
+            elif inlib in ("🟢", "🟡"):
+                row_tag = "inlib"
             elif not artist or not title:
                 row_tag = "warn"
             else:
@@ -320,32 +330,48 @@ class SendToLibPanel(tk.Toplevel):
 
             self._tree.insert(
                 "", "end",
-                iid=src,   # full source path used as unique row identifier
+                iid=src,
                 values=(ready_icon, inlib, fname, artist, album, title, dest_full),
                 tags=(row_tag,),
             )
             self._log.info(f"Preview: {fname!r} → {dest_full}")
 
-        self._update_status(not_ready)
+        self._update_status(not_ready, already_lib)
 
-    def _update_status(self, not_ready: int | None = None):
+    def _update_status(self, not_ready: int | None = None, already_lib: int | None = None):
         """Refresh the status label and Confirm button state."""
         if not_ready is None:
-            # Count from existing tree tags
             not_ready = sum(
                 1 for iid in self._tree.get_children()
                 if "notready" in self._tree.item(iid, "tags")
             )
+        if already_lib is None:
+            already_lib = sum(
+                1 for iid in self._tree.get_children()
+                if "inlib" in self._tree.item(iid, "tags")
+            )
         n = len(self._paths)
         self.title(f"Send to Lib — {self._partition} ({n} file{'s' if n != 1 else ''})")
+
         if n == 0:
             self._status.set("No files remaining.")
             self._confirm_btn.configure(state="disabled")
-        elif not_ready:
-            self._status.set(
-                f"⛔  {not_ready} of {n} file(s) are NOT Lib Ready — "
-                f"fix tags/cover art before sending."
+            return
+
+        problems = []
+        if not_ready:
+            problems.append(
+                f"{not_ready} file{'s' if not_ready != 1 else ''} not Lib Ready (❌) — "
+                "fix tags/cover art first"
             )
+        if already_lib:
+            problems.append(
+                f"{already_lib} file{'s' if already_lib != 1 else ''} already in Lib (🟢/🟡) — "
+                "remove or use Compare Tracks to update"
+            )
+
+        if problems:
+            self._status.set("⛔  " + "   |   ".join(problems))
             self._confirm_btn.configure(state="disabled")
         else:
             self._status.set(
@@ -370,6 +396,26 @@ class SendToLibPanel(tk.Toplevel):
         for i, iid in enumerate(self._tree.get_children()):
             tags = self._tree.item(iid, "tags")
             if not any(t in tags for t in ("notready", "warn")):
+                self._tree.item(iid, tags=("odd" if i % 2 == 0 else "even",))
+
+        self._update_status()
+
+    def _remove_blocking(self):
+        """Remove all rows that block confirmation (not ready or already in lib)."""
+        blocking = [
+            iid for iid in self._tree.get_children()
+            if any(t in self._tree.item(iid, "tags") for t in ("notready", "inlib"))
+        ]
+        if not blocking:
+            return
+        for iid in blocking:
+            self._paths.remove(iid)
+            self._tree.delete(iid)
+
+        # Re-stripe remaining rows
+        for i, iid in enumerate(self._tree.get_children()):
+            tags = self._tree.item(iid, "tags")
+            if not any(t in tags for t in ("notready", "inlib", "warn")):
                 self._tree.item(iid, tags=("odd" if i % 2 == 0 else "even",))
 
         self._update_status()

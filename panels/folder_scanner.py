@@ -63,7 +63,7 @@ def _check_lib_ready(file_path: str) -> bool:
     """
     Return True if the file meets lib-ready criteria:
       1. Has non-empty ARTIST, TITLE and ALBUM tags
-      2. Has at least one embedded image with both dimensions > 320 px
+      2. Has at least one embedded image with both dimensions > 300 px
     """
     try:
         from PIL import Image
@@ -77,7 +77,7 @@ def _check_lib_ready(file_path: str) -> bool:
         for pic in flac.pictures:
             img = Image.open(io.BytesIO(pic.data))
             w, h = img.size
-            if w > 320 and h > 320:
+            if w >= 300 and h >= 300:
                 return True
         return False
     except Exception:
