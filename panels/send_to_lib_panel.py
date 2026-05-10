@@ -230,7 +230,7 @@ class SendToLibPanel(tk.Toplevel):
 
         cols = ("libready", "inlib", "src", "artist", "album", "title", "dest")
         self._tree = ttk.Treeview(
-            tree_frm, columns=cols, show="headings", selectmode="browse",
+            tree_frm, columns=cols, show="headings", selectmode="extended",
         )
         headings = {
             "libready": ("Lib Ready", 70),
@@ -259,6 +259,8 @@ class SendToLibPanel(tk.Toplevel):
         self._tree.tag_configure("warn",     background="#fff8e1", foreground="#856404")
         self._tree.tag_configure("notready", background="#fde8e8", foreground="#922b21")
 
+        self._tree.bind("<Delete>", lambda _: self._remove_selected())
+
         # ── Status bar ── #
         self._status = tk.StringVar()
         tk.Label(
@@ -276,6 +278,10 @@ class SendToLibPanel(tk.Toplevel):
             command=self._confirm,
         )
         self._confirm_btn.pack(side=tk.RIGHT, padx=(0, 6))
+        ttk.Button(
+            bar, text="🗑  Remove Selected",
+            command=self._remove_selected,
+        ).pack(side=tk.LEFT)
 
     # ------------------------------------------------------------------ #
     # Data                                                                 #
@@ -314,24 +320,59 @@ class SendToLibPanel(tk.Toplevel):
 
             self._tree.insert(
                 "", "end",
+                iid=src,   # full source path used as unique row identifier
                 values=(ready_icon, inlib, fname, artist, album, title, dest_full),
                 tags=(row_tag,),
             )
             self._log.info(f"Preview: {fname!r} → {dest_full}")
 
+        self._update_status(not_ready)
+
+    def _update_status(self, not_ready: int | None = None):
+        """Refresh the status label and Confirm button state."""
+        if not_ready is None:
+            # Count from existing tree tags
+            not_ready = sum(
+                1 for iid in self._tree.get_children()
+                if "notready" in self._tree.item(iid, "tags")
+            )
         n = len(self._paths)
-        if not_ready:
-            status = (f"⛔  {not_ready} of {n} file(s) are NOT Lib Ready — "
-                      f"fix tags/cover art before sending.")
+        self.title(f"Send to Lib — {self._partition} ({n} file{'s' if n != 1 else ''})")
+        if n == 0:
+            self._status.set("No files remaining.")
+            self._confirm_btn.configure(state="disabled")
+        elif not_ready:
+            self._status.set(
+                f"⛔  {not_ready} of {n} file(s) are NOT Lib Ready — "
+                f"fix tags/cover art before sending."
+            )
             self._confirm_btn.configure(state="disabled")
         else:
-            status = f"{n} file{'s' if n != 1 else ''} ready to send to {self._partition}."
+            self._status.set(
+                f"{n} file{'s' if n != 1 else ''} ready to send to {self._partition}."
+            )
             self._confirm_btn.configure(state="normal")
-        self._status.set(status)
 
     # ------------------------------------------------------------------ #
     # Actions                                                              #
     # ------------------------------------------------------------------ #
+
+    def _remove_selected(self):
+        """Remove the selected rows from the preview list (does not touch disk)."""
+        selected = self._tree.selection()
+        if not selected:
+            return
+        for iid in selected:
+            self._paths.remove(iid)   # iid == full source path
+            self._tree.delete(iid)
+
+        # Re-stripe remaining rows (preserve notready/warn tags)
+        for i, iid in enumerate(self._tree.get_children()):
+            tags = self._tree.item(iid, "tags")
+            if not any(t in tags for t in ("notready", "warn")):
+                self._tree.item(iid, tags=("odd" if i % 2 == 0 else "even",))
+
+        self._update_status()
 
     def _confirm(self):
         self._log.info(
