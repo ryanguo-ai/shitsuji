@@ -55,7 +55,7 @@ class App(TkinterDnD.Tk):
             self._notebook,
             on_compare=self._open_compare,
         )
-        self._notebook.add(SearchTab(self._notebook),   text="  Search  ")
+        self._notebook.add(SearchTab(self._notebook),   text="  Search In Lib  ")
         self._notebook.add(self._scan_tab,              text="  Scan  ")
         self._notebook.add(self._compare_tab,           text="  Compare Tracks  ")
 
