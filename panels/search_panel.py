@@ -20,6 +20,18 @@ PAGE_SIZE = 100
 
 _log = get_logger("search")
 
+# (display label, minimum ranking value)
+_RANK_FILTER_OPTS = [
+    ("Any Rating", 0),
+    ("★  1+",      1),
+    ("★★  2+",     2),
+    ("★★★  3+",    3),
+    ("★★★★  4+",   4),
+    ("❤️  5",      5),
+]
+_RANK_FILTER_LABELS = [o[0] for o in _RANK_FILTER_OPTS]
+_RANK_FILTER_MAP    = {o[0]: o[1] for o in _RANK_FILTER_OPTS}
+
 
 def _fuzzy_match(query: str, target: str, threshold: float = 0.5) -> bool:
     """Return True if *query* fuzzy-matches *target* (empty query matches everything)."""
@@ -97,6 +109,17 @@ class SearchTab(tk.Frame, AudioMenuMixin):
 
         ttk.Button(inp, text="Search", command=self._search).pack(side=tk.LEFT)
         ttk.Button(inp, text="Clear",  command=self._clear).pack(side=tk.LEFT, padx=(6, 0))
+
+        # Rating filter
+        tk.Label(inp, text="Rating:", font=("Segoe UI", 9), bg="#f5f5f5").pack(
+            side=tk.LEFT, padx=(20, 4))
+        self._rank_filter_var = tk.StringVar(value=_RANK_FILTER_LABELS[0])
+        rank_cb = ttk.Combobox(
+            inp, textvariable=self._rank_filter_var,
+            values=_RANK_FILTER_LABELS, state="readonly", width=11,
+        )
+        rank_cb.pack(side=tk.LEFT)
+        rank_cb.bind("<<ComboboxSelected>>", lambda _: self._search())
 
         # ── Status label ─────────────────────────────────────────────── #
         self._status_var = tk.StringVar(value="Press Search or Enter to load library.")
@@ -212,6 +235,7 @@ class SearchTab(tk.Frame, AudioMenuMixin):
     def _search(self):
         artist_q = self._artist_var.get().strip()
         title_q  = self._title_var.get().strip()
+        min_rank = _RANK_FILTER_MAP.get(self._rank_filter_var.get(), 0)
 
         self._status_var.set("Searching…")
         self.update_idletasks()
@@ -219,6 +243,9 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         self._results = []
         lib_paths = self._settings.get("music_lib_paths", {})
         for row in get_track_info():
+            ranking = int(row["ranking"] or 0)
+            if ranking < min_rank:
+                continue
             if (    _fuzzy_match(artist_q, row["artist"] or "")
                 and _fuzzy_match(title_q,  row["title"]  or "")):
                 d = dict(row)
@@ -227,7 +254,7 @@ class SearchTab(tk.Frame, AudioMenuMixin):
                     os.path.join(lib_root, d["partition"], d["rel_path"])
                     if lib_root else d["rel_path"]
                 )
-                d["ranking"] = int(d.get("ranking") or 0)
+                d["ranking"] = ranking
                 self._results.append(d)
 
         self._sort_col = None
@@ -244,6 +271,7 @@ class SearchTab(tk.Frame, AudioMenuMixin):
     def _clear(self):
         self._artist_var.set("")
         self._title_var.set("")
+        self._rank_filter_var.set(_RANK_FILTER_LABELS[0])
         self._results = []
         self._page = 0
         self.tree.delete(*self.tree.get_children())
