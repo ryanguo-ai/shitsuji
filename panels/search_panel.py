@@ -11,7 +11,7 @@ from mutagen.flac import FLAC
 
 from panels.audio_details_panel import AudioDetailsPanel
 from panels.audio_menu import AudioMenuMixin
-from panels.database import compute_file_md5, get_track_info, upsert_track_info, set_track_ranking
+from panels.database import compute_file_md5, get_artist_name_variants, get_track_info, upsert_track_info, set_track_ranking
 from panels.keyboard_selection import attach_keyboard_range_selection
 from panels.logger import get_logger
 from panels.settings_panel import load_settings, save_settings
@@ -240,14 +240,22 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         self._status_var.set("Searching…")
         self.update_idletasks()
 
+        # Expand artist query through the alias table so tracks stored under
+        # any name variant of a matched artist are included in results.
+        artist_variants = get_artist_name_variants(artist_q)
+
+        def _artist_matches(track_artist: str) -> bool:
+            if _fuzzy_match(artist_q, track_artist):
+                return True
+            return any(_fuzzy_match(v, track_artist) for v in artist_variants)
+
         self._results = []
         lib_paths = self._settings.get("music_lib_paths", {})
         for row in get_track_info():
             ranking = int(row["ranking"] or 0)
             if ranking < min_rank:
                 continue
-            if (    _fuzzy_match(artist_q, row["artist"] or "")
-                and _fuzzy_match(title_q,  row["title"]  or "")):
+            if _artist_matches(row["artist"] or "") and _fuzzy_match(title_q, row["title"] or ""):
                 d = dict(row)
                 lib_root = lib_paths.get(d["partition"], "")
                 d["full_path"] = (

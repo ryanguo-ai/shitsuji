@@ -540,3 +540,33 @@ def update_alias(
             """,
             (alias, locale or None, alias_type or None, alias_id),
         )
+
+
+def get_artist_name_variants(query: str) -> set[str]:
+    """Return every name variant (name, sort_name, alias) for artists that match *query*.
+
+    Used by Search In Lib to expand an artist query through the alias table so
+    that a track stored under any alias of an artist is included in results.
+    Returns an empty set if *query* is blank.
+    """
+    if not query.strip():
+        return set()
+    q = f"%{query.strip()}%"
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT ai.name, ai.sort_name, aa.alias
+              FROM artist_info ai
+              LEFT JOIN artist_alias aa ON aa.artist_id = ai.id
+             WHERE ai.name      LIKE ? COLLATE NOCASE
+                OR ai.sort_name LIKE ? COLLATE NOCASE
+                OR aa.alias     LIKE ? COLLATE NOCASE
+            """,
+            (q, q, q),
+        ).fetchall()
+    variants: set[str] = set()
+    for row in rows:
+        if row["name"]:      variants.add(row["name"])
+        if row["sort_name"]: variants.add(row["sort_name"])
+        if row["alias"]:     variants.add(row["alias"])
+    return variants
