@@ -331,12 +331,12 @@ class SearchTab(tk.Frame, AudioMenuMixin):
             # ── Rate Track submenu ── #
             rate_menu = tk.Menu(menu, tearoff=0)
             _rank_labels = [
-                ("  0  —  Unranked", 0),
-                ("★  1",             1),
-                ("★★  2",            2),
-                ("★★★  3",           3),
-                ("★★★★  4",          4),
                 ("❤️  5  —  Loved",  5),
+                ("★★★★  4",          4),
+                ("★★★  3",           3),
+                ("★★  2",            2),
+                ("★  1",             1),
+                ("  0  —  Unranked", 0),
             ]
             for label, val in _rank_labels:
                 rate_menu.add_command(
