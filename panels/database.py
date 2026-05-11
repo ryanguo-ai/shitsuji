@@ -522,3 +522,21 @@ def delete_alias(alias_id: int) -> None:
     """Delete an artist_alias row by its primary key."""
     with _connect() as conn:
         conn.execute("DELETE FROM artist_alias WHERE id = ?", (alias_id,))
+
+
+def update_alias(
+    alias_id: int,
+    alias: str,
+    locale: str = "",
+    alias_type: str = "",
+) -> None:
+    """Update the text, locale and type of an existing alias row."""
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE artist_alias
+               SET alias = ?, locale = ?, alias_type = ?
+             WHERE id = ?
+            """,
+            (alias, locale or None, alias_type or None, alias_id),
+        )

@@ -26,6 +26,7 @@ from panels.database import (
     get_aliases,
     get_all_artists,
     search_artists_local,
+    update_alias,
     update_artist,
     upsert_artist,
 )
@@ -252,6 +253,13 @@ class ArtistTab(tk.Frame):
     def __init__(self, master: tk.Widget) -> None:
         super().__init__(master, bg="#f5f5f5")
         self._selected_artist_id: int | None = None
+        # Inline alias editing state
+        self._alias_edit_entry    = None
+        self._alias_edit_iid      = None
+        self._alias_edit_col      = None   # "#1", "#2", or "#3"
+        self._alias_edit_col_idx  = None
+        self._alias_edit_orig_val = None
+        self._alias_modified_iids: set = set()
         self._build_ui()
 
     # ------------------------------------------------------------------ #
@@ -434,15 +442,22 @@ class ArtistTab(tk.Frame):
         a_vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self._alias_tree.pack(fill=tk.BOTH, expand=True)
 
-        self._alias_tree.tag_configure("odd",  background="#ffffff")
-        self._alias_tree.tag_configure("even", background="#ecf0f1")
+        self._alias_tree.tag_configure("odd",      background="#ffffff")
+        self._alias_tree.tag_configure("even",     background="#ecf0f1")
+        self._alias_tree.tag_configure("modified", background="#fff3cd", foreground="#7d5a00")
 
         attach_keyboard_range_selection(self._alias_tree)
+        self._alias_tree.bind("<Double-1>", self._on_alias_double_click)
 
         a_btn = tk.Frame(alias_frame, bg="#f5f5f5", pady=4)
         a_btn.pack(fill=tk.X)
         ttk.Button(a_btn, text="+ Add Alias",    command=self._on_add_alias).pack(side=tk.LEFT)
         ttk.Button(a_btn, text="✕ Remove Alias", command=self._on_remove_alias).pack(side=tk.LEFT, padx=(8, 0))
+        self._alias_save_btn = ttk.Button(
+            a_btn, text="💾 Save Alias Changes",
+            command=self._on_save_alias_changes, state="disabled",
+        )
+        self._alias_save_btn.pack(side=tk.RIGHT)
 
     # ------------------------------------------------------------------ #
     # Data loading                                                         #
@@ -479,6 +494,8 @@ class ArtistTab(tk.Frame):
 
     def _refresh_alias_list(self, artist_id: int) -> None:
         self._alias_tree.delete(*self._alias_tree.get_children())
+        self._alias_modified_iids.clear()
+        self._alias_save_btn.configure(state="disabled")
         for i, row in enumerate(get_aliases(artist_id)):
             self._alias_tree.insert(
                 "", "end",
@@ -490,6 +507,103 @@ class ArtistTab(tk.Frame):
                 ),
                 tags=("odd" if i % 2 == 0 else "even",),
             )
+
+    # ------------------------------------------------------------------ #
+    # Alias inline editing                                                 #
+    # ------------------------------------------------------------------ #
+
+    def _on_alias_double_click(self, event) -> None:
+        if self._alias_edit_entry:
+            self._commit_alias_edit()
+        if self._alias_tree.identify_region(event.x, event.y) != "cell":
+            return
+        col = self._alias_tree.identify_column(event.x)   # "#1" / "#2" / "#3"
+        iid = self._alias_tree.identify_row(event.y)
+        if not iid or col not in ("#1", "#2", "#3"):
+            return
+        self._start_alias_edit(iid, col)
+        return "break"
+
+    def _start_alias_edit(self, iid: str, col: str) -> None:
+        bbox = self._alias_tree.bbox(iid, col)
+        if not bbox:
+            return
+        bx, by, bw, bh = bbox
+        col_idx = int(col[1:]) - 1
+        current = self._alias_tree.item(iid, "values")[col_idx]
+
+        self._alias_edit_iid      = iid
+        self._alias_edit_col      = col
+        self._alias_edit_col_idx  = col_idx
+        self._alias_edit_orig_val = current
+
+        entry = tk.Entry(
+            self._alias_tree, font=("Segoe UI", 9), relief="flat",
+            highlightthickness=1, highlightbackground="#2980b9",
+            highlightcolor="#2980b9",
+        )
+        entry.insert(0, current)
+        entry.select_range(0, tk.END)
+        entry.place(x=bx, y=by, width=bw, height=bh)
+        entry.focus_set()
+        entry.bind("<Return>",   lambda _: self._commit_alias_edit())
+        entry.bind("<Tab>",      lambda _: self._commit_alias_edit())
+        entry.bind("<Escape>",   lambda _: self._cancel_alias_edit())
+        entry.bind("<FocusOut>", lambda _: self._commit_alias_edit())
+        self._alias_edit_entry = entry
+
+    def _commit_alias_edit(self) -> None:
+        entry = self._alias_edit_entry
+        if not entry:
+            return
+        self._alias_edit_entry = None   # guard against re-entrance via FocusOut
+        new_val  = entry.get()
+        iid      = self._alias_edit_iid
+        col_idx  = self._alias_edit_col_idx
+        orig_val = self._alias_edit_orig_val
+        entry.destroy()
+        self._alias_edit_iid = self._alias_edit_col = self._alias_edit_col_idx = self._alias_edit_orig_val = None
+
+        if new_val == orig_val:
+            return
+        vals = list(self._alias_tree.item(iid, "values"))
+        vals[col_idx] = new_val
+        self._alias_tree.item(iid, values=vals)
+        self._alias_modified_iids.add(iid)
+        tags = [t for t in self._alias_tree.item(iid, "tags") if t != "modified"]
+        tags.append("modified")
+        self._alias_tree.item(iid, tags=tags)
+        self._alias_save_btn.configure(state="normal")
+
+    def _cancel_alias_edit(self) -> None:
+        entry = self._alias_edit_entry
+        if not entry:
+            return
+        self._alias_edit_entry = None
+        entry.destroy()
+        self._alias_edit_iid = self._alias_edit_col = self._alias_edit_col_idx = self._alias_edit_orig_val = None
+
+    def _on_save_alias_changes(self) -> None:
+        """Persist all pending alias edits to the database."""
+        if not self._alias_modified_iids:
+            return
+        errors = []
+        for iid in list(self._alias_modified_iids):
+            vals = self._alias_tree.item(iid, "values")
+            alias, locale, alias_type = vals[0], vals[1], vals[2]
+            try:
+                update_alias(int(iid), alias, locale, alias_type)
+                self._alias_modified_iids.discard(iid)
+                tags = [t for t in self._alias_tree.item(iid, "tags") if t != "modified"]
+                self._alias_tree.item(iid, tags=tags)
+            except Exception as exc:
+                errors.append(f"{alias}: {exc}")
+        if not self._alias_modified_iids:
+            self._alias_save_btn.configure(state="disabled")
+        if errors:
+            messagebox.showerror("Save failed", "\n".join(errors), parent=self)
+        else:
+            self._footer_var.set("Alias changes saved.")
 
     # ------------------------------------------------------------------ #
     # Event handlers                                                       #
