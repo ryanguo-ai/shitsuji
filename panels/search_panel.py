@@ -244,6 +244,23 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         # any name variant of a matched artist are included in results.
         artist_variants = get_artist_name_variants(artist_q)
 
+        artist_q_lower    = artist_q.lower()
+        variants_lower    = {v.strip().lower() for v in artist_variants}
+
+        def _artist_priority(track_artist: str) -> int:
+            """Return ordering priority for the artist match.
+
+            1 – exact match against the query string itself
+            2 – exact match against a resolved alias / name variant
+            3 – fuzzy / substring match (everything else)
+            """
+            t = track_artist.strip().lower()
+            if artist_q and t == artist_q_lower:
+                return 1
+            if t in variants_lower:
+                return 2
+            return 3
+
         def _artist_matches(track_artist: str) -> bool:
             if _fuzzy_match(artist_q, track_artist):
                 return True
@@ -263,7 +280,12 @@ class SearchTab(tk.Frame, AudioMenuMixin):
                     if lib_root else d["rel_path"]
                 )
                 d["ranking"] = ranking
+                d["_priority"] = _artist_priority(d["artist"] or "")
                 self._results.append(d)
+
+        # Sort by match quality: exact artist → exact alias → fuzzy
+        if artist_q:
+            self._results.sort(key=lambda r: r["_priority"])
 
         self._sort_col = None
         self._sort_rev = False
