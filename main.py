@@ -59,7 +59,7 @@ class App(TkinterDnD.Tk):
             on_search_artist=self._open_artist_search,
         )
         self._artist_tab = ArtistTab(self._notebook)
-        self._notebook.add(SearchTab(self._notebook),   text="  Search In Lib  ")
+        self._notebook.add(SearchTab(self._notebook, on_search_artist=self._open_artist_search),   text="  Search In Lib  ")
         self._notebook.add(self._scan_tab,              text="  Scan  ")
         self._notebook.add(self._compare_tab,           text="  Compare Tracks  ")
         self._notebook.add(self._artist_tab,            text="  Artist Info  ")

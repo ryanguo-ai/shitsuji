@@ -65,9 +65,10 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         ("updated",   "Updated",    130,  tk.W,      False),
     ]
 
-    def __init__(self, master):
+    def __init__(self, master, on_search_artist=None):
         super().__init__(master, bg="#f5f5f5")
         self._settings = load_settings()
+        self._on_search_artist = on_search_artist  # callable(artist_name) or None
         self._sort_col: str | None = None
         self._sort_rev: bool = False
         self._results: list = []    # full filtered+sorted result set
@@ -106,6 +107,12 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         title_entry = ttk.Entry(inp, textvariable=self._title_var, width=24)
         title_entry.pack(side=tk.LEFT, padx=(4, 16))
         title_entry.bind("<Return>", lambda _: self._search())
+
+        tk.Label(inp, text="Album:", font=("Segoe UI", 9), bg="#f5f5f5").pack(side=tk.LEFT)
+        self._album_var = tk.StringVar()
+        album_entry = ttk.Entry(inp, textvariable=self._album_var, width=24)
+        album_entry.pack(side=tk.LEFT, padx=(4, 16))
+        album_entry.bind("<Return>", lambda _: self._search())
 
         ttk.Button(inp, text="Search", command=self._search).pack(side=tk.LEFT)
         ttk.Button(inp, text="Clear",  command=self._clear).pack(side=tk.LEFT, padx=(6, 0))
@@ -235,6 +242,7 @@ class SearchTab(tk.Frame, AudioMenuMixin):
     def _search(self):
         artist_q = self._artist_var.get().strip()
         title_q  = self._title_var.get().strip()
+        album_q  = self._album_var.get().strip()
         min_rank = _RANK_FILTER_MAP.get(self._rank_filter_var.get(), 0)
 
         self._status_var.set("Searching…")
@@ -272,7 +280,7 @@ class SearchTab(tk.Frame, AudioMenuMixin):
             ranking = int(row["ranking"] or 0)
             if ranking < min_rank:
                 continue
-            if _artist_matches(row["artist"] or "") and _fuzzy_match(title_q, row["title"] or ""):
+            if _artist_matches(row["artist"] or "") and _fuzzy_match(title_q, row["title"] or "") and _fuzzy_match(album_q, row["album"] or ""):
                 d = dict(row)
                 lib_root = lib_paths.get(d["partition"], "")
                 d["full_path"] = (
@@ -301,6 +309,7 @@ class SearchTab(tk.Frame, AudioMenuMixin):
     def _clear(self):
         self._artist_var.set("")
         self._title_var.set("")
+        self._album_var.set("")
         self._rank_filter_var.set(_RANK_FILTER_LABELS[0])
         self._results = []
         self._page = 0
@@ -314,6 +323,14 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         self._selected_rel_path  = None
         self._status_var.set("Press Search or Enter to load library.")
         self._footer_var.set("Ready.")
+
+    def _search_by(self, *, artist: str = "", title: str = "", album: str = "") -> None:
+        """Clear all filters, set the given field, then run a search."""
+        self._artist_var.set(artist)
+        self._title_var.set(title)
+        self._album_var.set(album)
+        self._rank_filter_var.set(_RANK_FILTER_LABELS[0])
+        self._search()
 
     # ------------------------------------------------------------------ #
     # Row selection → detail panel                                         #
@@ -358,6 +375,43 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         paths = [self.tree.item(i, "values")[2] for i in selected]
 
         def extra(menu, paths, audio_paths, flac_paths):
+            # ── Search Artist in Artist Info ── #
+            if len(selected) == 1 and self._on_search_artist is not None:
+                artist = (self.tree.item(item, "values")[3] or "").strip()
+                if artist:
+                    menu.add_command(
+                        label=f"👤  Search Artist: {artist}",
+                        command=lambda a=artist: self._on_search_artist(a),
+                    )
+                    menu.add_separator()
+
+            # ── Search By submenu ── #
+            if len(selected) == 1:
+                vals = self.tree.item(item, "values")
+                row_artist = (vals[3] or "").strip()
+                row_title  = (vals[4] or "").strip()
+                row_album  = (vals[5] or "").strip()
+
+                by_menu = tk.Menu(menu, tearoff=0)
+                if row_artist:
+                    by_menu.add_command(
+                        label=f"Artist: {row_artist}",
+                        command=lambda a=row_artist: self._search_by(artist=a),
+                    )
+                if row_title:
+                    by_menu.add_command(
+                        label=f"Title: {row_title}",
+                        command=lambda t=row_title: self._search_by(title=t),
+                    )
+                if row_album:
+                    by_menu.add_command(
+                        label=f"Album: {row_album}",
+                        command=lambda al=row_album: self._search_by(album=al),
+                    )
+                if row_artist or row_title or row_album:
+                    menu.add_cascade(label="🔎  Search By ▶", menu=by_menu)
+                    menu.add_separator()
+
             # ── Rate Track submenu ── #
             rate_menu = tk.Menu(menu, tearoff=0)
             _rank_labels = [
