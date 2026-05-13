@@ -376,8 +376,92 @@ class SearchTab(tk.Frame, AudioMenuMixin):
             menu.add_cascade(label="⭐  Rate Track ▶", menu=rate_menu)
             menu.add_separator()
 
+            # ── Paste cover art from clipboard ── #
+            if flac_paths:
+                menu.add_command(
+                    label="🖼  Embed Cover Art from Clipboard",
+                    command=lambda fp=flac_paths: self._paste_cover_art_to_selected(fp),
+                )
+                menu.add_separator()
+
         menu = self._build_audio_context_menu(paths, extra_items_fn=extra)
         menu.tk_popup(event.x_root, event.y_root)
+
+    def _paste_cover_art_to_selected(self, flac_paths: list[str]) -> None:
+        """Read an image from the clipboard, show a preview dialog, then embed on confirm."""
+        from PIL import ImageGrab, Image
+        from mutagen.flac import FLAC, Picture
+        import io as _io
+        from panels.folder_scanner import _PasteCoverArtDialog
+
+        try:
+            img = ImageGrab.grabclipboard()
+        except Exception as exc:
+            from tkinter import messagebox
+            messagebox.showerror("Clipboard error", str(exc), parent=self)
+            return
+
+        if not isinstance(img, Image.Image):
+            from tkinter import messagebox
+            messagebox.showinfo(
+                "No image in clipboard",
+                "The clipboard does not contain an image.\n\nCopy an image first, then try again.",
+                parent=self,
+            )
+            return
+
+        buf = _io.BytesIO()
+        if img.mode in ("RGBA", "LA", "PA"):
+            img.save(buf, "PNG")
+            mime = "image/png"
+        else:
+            img.convert("RGB").save(buf, "JPEG", quality=95)
+            mime = "image/jpeg"
+        img_bytes = buf.getvalue()
+
+        dlg = _PasteCoverArtDialog(self, img, img_bytes, mime, len(flac_paths))
+        self.wait_window(dlg)
+        if not dlg.confirmed:
+            return
+
+        log = get_logger("search_paste_cover")
+        errors: list[str] = []
+        for path in flac_paths:
+            try:
+                flac = FLAC(path)
+                other_pictures = [p for p in flac.pictures if p.type != 3]
+                flac.clear_pictures()
+                for p in other_pictures:
+                    flac.add_picture(p)
+                pic = Picture()
+                pic.type = 3
+                pic.mime = mime
+                pic.desc = "Front Cover"
+                pic.data = img_bytes
+                pic.width = img.width
+                pic.height = img.height
+                pic.depth = max(len(img.getbands()), 1) * 8
+                flac.add_picture(pic)
+                flac.save()
+                log.info("Embedded cover art: %s", path)
+            except Exception as exc:
+                log.error("Failed to embed cover art into %s: %s", path, exc, exc_info=True)
+                errors.append(f"{os.path.basename(path)}: {exc}")
+
+        from tkinter import messagebox
+        n = len(flac_paths)
+        if errors:
+            messagebox.showerror(
+                "Embed Cover Art",
+                f"Embedded into {n - len(errors)} file(s), {len(errors)} failed.\n\n" + "\n".join(errors[:8]),
+                parent=self,
+            )
+        else:
+            messagebox.showinfo(
+                "Embed Cover Art",
+                f"Embedded cover art into {n} file{'s' if n != 1 else ''}.",
+                parent=self,
+            )
 
     def _apply_ranking(self, iids, ranking: int):
         """Persist a 0-5 ranking for each selected row and refresh the emoji."""
