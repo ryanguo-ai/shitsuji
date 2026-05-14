@@ -240,7 +240,7 @@ class AudioDetailsPanel(tk.Frame):
 
         tk.Label(dlg, text="Tag name:", font=("Segoe UI", 9),
                  bg="#f5f5f5", anchor="w").grid(row=0, column=0, sticky="w", **pad)
-        name_var = tk.StringVar()
+        name_var = tk.StringVar(value="ALBUM")
         name_cb = ttk.Combobox(dlg, textvariable=name_var,
                                values=self._COMMON_TAGS, width=22)
         name_cb.grid(row=0, column=1, sticky="ew", **pad)
