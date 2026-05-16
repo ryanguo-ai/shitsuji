@@ -18,58 +18,555 @@ from panels.logger import get_logger
 
 
 class _ScanFileDetailsPanel(tk.Frame):
-    """Side-by-side detail panel for the Scan tab.
+    """File-Details panel for the Scan tab.
 
-    Left  pane → selected local scan file.
-    Right pane → matching track in the music library (blank when none).
-    Both panes are full ``AudioDetailsPanel`` instances so tag editing /
-    cover-art operations work on either side.
+    Top    → two cover-art thumbnails (Local | Lib) with image-info and bitrate.
+    Bottom → one combined Treeview (Property | Local | Lib) showing technical
+             stats and the union of tags, with diff rows highlighted amber.
+             Mirrors the visual style of the Compare Tracks panel.
+
+    If no lib track is supplied, the right cover stays blank and the "Lib"
+    column is empty.
     """
 
     def __init__(self, master):
         super().__init__(master, bg="#f0f0f0")
+        self._local_photo = None
+        self._lib_photo   = None
+        self._local_cover_bytes: bytes | None = None
+        self._lib_cover_bytes:   bytes | None = None
+        # Current paths for the two columns (set by show()).
+        self._local_path = ""
+        self._lib_path   = ""
+        # Map of editable tag-row iid → tag key (only populated for the
+        # "── Tags ──" section; technical/file/header rows are excluded).
+        self._tag_row_keys: dict[str, str] = {}
+        # State for the in-place edit Entry (one at a time).
+        self._edit_entry: tk.Entry | None = None
+        self._build()
 
-        self._paned = tk.PanedWindow(
-            self, orient=tk.HORIZONTAL,
-            sashrelief=tk.RAISED, sashwidth=4,
-            bg="#bdc3c7",
+    # ------------------------------------------------------------------ #
+    # UI construction                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _build(self):
+        tk.Label(
+            self, text="File Details",
+            font=("Segoe UI", 11, "bold"),
+            bg="#f0f0f0", fg="#2c3e50", anchor="w", padx=10, pady=8,
+        ).pack(fill=tk.X)
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X)
+
+        # ── Cover row: Local | Lib ─────────────────────────────────── #
+        covers = tk.Frame(self, bg="#f0f0f0")
+        covers.pack(fill=tk.X, pady=(8, 4))
+        covers.columnconfigure(0, weight=1, uniform="side")
+        covers.columnconfigure(1, weight=1, uniform="side")
+
+        self._local_info_var = tk.StringVar()
+        self._lib_info_var   = tk.StringVar()
+        self._local_cover    = self._build_cover_column(
+            covers, col=0, title="Local File",
+            info_var=self._local_info_var, is_local=True)
+        self._lib_cover      = self._build_cover_column(
+            covers, col=1, title="Lib Track",
+            info_var=self._lib_info_var,   is_local=False)
+
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(4, 0))
+
+        # ── Combined tag/properties table ──────────────────────────── #
+        tbl = tk.Frame(self, bg="#f0f0f0")
+        tbl.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        self._tree = ttk.Treeview(
+            tbl, columns=("property", "local", "lib"),
+            show="headings", selectmode="browse",
         )
-        self._paned.pack(fill=tk.BOTH, expand=True)
+        self._tree.heading("property", text="Property", anchor=tk.W)
+        self._tree.heading("local",    text="Local",    anchor=tk.W)
+        self._tree.heading("lib",      text="Lib",      anchor=tk.W)
+        self._tree.column("property", width=120, stretch=False)
+        self._tree.column("local",    width=200, stretch=True)
+        self._tree.column("lib",      width=200, stretch=True)
 
-        self.local_panel = AudioDetailsPanel(self._paned, title="Local File")
-        self.lib_panel   = AudioDetailsPanel(self._paned, title="Lib Track")
-        self._paned.add(self.local_panel, stretch="always", minsize=220)
-        self._paned.add(self.lib_panel,   stretch="always", minsize=220)
+        vsb = ttk.Scrollbar(tbl, orient=tk.VERTICAL,   command=self._tree.yview)
+        hsb = ttk.Scrollbar(tbl, orient=tk.HORIZONTAL, command=self._tree.xview)
+        self._tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.pack(side=tk.RIGHT,  fill=tk.Y)
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
+        self._tree.pack(fill=tk.BOTH, expand=True)
+
+        # Row style tags (same palette as Compare Tracks)
+        self._tree.tag_configure("header",
+                                 background="#d6eaf8", foreground="#1a5276",
+                                 font=("Segoe UI", 9, "bold"))
+        self._tree.tag_configure("diff", background="#fefce8", foreground="#7d6608")
+        self._tree.tag_configure("same", background="#ffffff", foreground="#1a1a1a")
+        self._tree.tag_configure("even", background="#ecf0f1", foreground="#1a1a1a")
+
+        # Double-click → edit a tag value (Local or Lib column only).
+        self._tree.bind("<Double-1>", self._on_tag_double_click)
+
+    def _build_cover_column(self, parent, *, col: int, title: str,
+                            info_var: tk.StringVar, is_local: bool) -> tk.Label:
+        wrap = tk.Frame(parent, bg="#f0f0f0")
+        wrap.grid(row=0, column=col, sticky="nsew", padx=8)
+        tk.Label(
+            wrap, text=title,
+            font=("Segoe UI", 9, "bold"),
+            bg="#f0f0f0", fg="#2c3e50",
+        ).pack()
+        cover = tk.Label(
+            wrap, bg="#f0f0f0",
+            text="No cover art",
+            font=("Segoe UI", 9, "italic"), fg="#7f8c8d",
+        )
+        cover.pack(pady=(4, 2))
+        cover.bind(
+            "<Button-3>",
+            lambda e, src=is_local: self._on_cover_right_click(e, is_local=src),
+        )
+        tk.Label(
+            wrap, textvariable=info_var,
+            font=("Segoe UI", 8), fg="#7f8c8d", bg="#f0f0f0",
+            justify=tk.CENTER,
+        ).pack()
+        return cover
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
     # ------------------------------------------------------------------ #
 
     def show(self, local_path: str, lib_path: str) -> None:
-        """Populate panes. Pass empty string to leave a pane blank."""
-        if local_path:
-            try:
-                self.local_panel.show_flac(local_path)
-            except Exception:
-                self.local_panel.clear()
-        else:
-            self.local_panel.clear()
+        """Populate both columns. Pass an empty string to leave a side blank."""
+        from panels.compare_tracks_panel import _load_flac_info
 
-        if lib_path:
+        # Commit any in-progress inline edit before reloading.
+        if self._edit_entry is not None:
             try:
-                self.lib_panel.show_flac(lib_path)
+                self._edit_entry.event_generate("<Return>")
             except Exception:
-                self.lib_panel.clear()
-        else:
-            self.lib_panel.clear()
+                self._edit_entry.destroy()
+            self._edit_entry = None
+
+        self._local_path = local_path or ""
+        self._lib_path   = lib_path   or ""
+
+        local_info = _load_flac_info(local_path) if local_path else None
+        lib_info   = _load_flac_info(lib_path)   if lib_path   else None
+
+        self._render_cover(self._local_cover, local_info, self._local_info_var,
+                           is_local=True)
+        self._render_cover(self._lib_cover,   lib_info,   self._lib_info_var,
+                           is_local=False)
+
+        self._populate_table(local_info, lib_info, local_path, lib_path)
 
     def show_flac(self, path: str) -> None:
-        """Backwards-compatible single-pane API (lib pane is cleared)."""
+        """Backwards-compatible single-pane API (lib column is cleared)."""
         self.show(path, "")
 
     def clear(self) -> None:
-        self.local_panel.clear()
-        self.lib_panel.clear()
+        if self._edit_entry is not None:
+            self._edit_entry.destroy()
+            self._edit_entry = None
+        self._local_path = ""
+        self._lib_path   = ""
+        self._tag_row_keys.clear()
+        self._render_cover(self._local_cover, None, self._local_info_var,
+                           is_local=True)
+        self._render_cover(self._lib_cover,   None, self._lib_info_var,
+                           is_local=False)
+        self._tree.delete(*self._tree.get_children())
+
+    # ------------------------------------------------------------------ #
+    # Cover-art rendering                                                  #
+    # ------------------------------------------------------------------ #
+
+    def _render_cover(self, label: tk.Label, info: dict | None,
+                      info_var: tk.StringVar, *, is_local: bool) -> None:
+        # No info → blank state
+        if not info or not info.get("cover"):
+            label.configure(image="", text="No cover art",
+                            bg="#f0f0f0", width=20, height=5)
+            if is_local:
+                self._local_photo = None
+                self._local_cover_bytes = None
+            else:
+                self._lib_photo = None
+                self._lib_cover_bytes = None
+            # Bitrate line still shown if info exists but no cover
+            if info:
+                info_var.set(self._format_info_line(info))
+            else:
+                info_var.set("")
+            return
+
+        # Decode + thumbnail
+        try:
+            import io
+            from PIL import Image, ImageTk
+            img = Image.open(io.BytesIO(info["cover"]))
+            img.thumbnail((240, 240), Image.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            label.configure(image=photo, text="", bg="#ffffff",
+                            width=photo.width(), height=photo.height())
+            if is_local:
+                self._local_photo = photo
+                self._local_cover_bytes = info["cover"]
+            else:
+                self._lib_photo = photo
+                self._lib_cover_bytes = info["cover"]
+        except Exception:
+            label.configure(image="", text="(cover unreadable)",
+                            bg="#f0f0f0", width=20, height=5)
+            if is_local:
+                self._local_photo = None
+                self._local_cover_bytes = None
+            else:
+                self._lib_photo = None
+                self._lib_cover_bytes = None
+
+        info_var.set(self._format_info_line(info))
+
+    @staticmethod
+    def _format_info_line(info: dict) -> str:
+        """Cover dims · cover size · bitrate (bitrate appears after image size)."""
+        dims    = info.get("cover_dims") or ""
+        sz      = info.get("cover_size_kb") or ""
+        bitrate = info.get("bitrate") or ""
+        parts: list[str] = []
+        if dims and sz:
+            parts.append(f"{dims} px  ·  {sz}")
+        elif dims:
+            parts.append(f"{dims} px")
+        elif sz:
+            parts.append(sz)
+        if bitrate:
+            parts.append(bitrate)
+        return "  ·  ".join(parts)
+
+    # ------------------------------------------------------------------ #
+    # Table population                                                     #
+    # ------------------------------------------------------------------ #
+
+    def _populate_table(self, src: dict | None, lib: dict | None,
+                        src_path: str, lib_path: str) -> None:
+        self._tree.delete(*self._tree.get_children())
+        self._tag_row_keys.clear()
+
+        if src is None and lib is None:
+            return
+
+        src = src or {"tags": {}, "bitrate": "", "duration": "",
+                      "cover_count": 0, "cover_dims": "", "cover_size_kb": ""}
+        lib = lib or {"tags": {}, "bitrate": "", "duration": "",
+                      "cover_count": 0, "cover_dims": "", "cover_size_kb": ""}
+
+        idx = [0]
+
+        def _add_header(label: str):
+            self._tree.insert("", "end",
+                              values=(f"── {label} ──", "", ""),
+                              tags=("header",))
+
+        def _add_row(prop: str, sv: str, lv: str, *, tag_key: str | None = None):
+            # Treat both columns as blank-equivalent when one side is missing
+            differs = (sv != lv) and bool(sv or lv) and src_path and lib_path
+            tag = ("diff" if differs
+                   else ("same" if idx[0] % 2 == 0 else "even"))
+            iid = self._tree.insert("", "end", values=(prop, sv, lv), tags=(tag,))
+            if tag_key is not None:
+                self._tag_row_keys[iid] = tag_key
+            idx[0] += 1
+
+        # Technical
+        _add_header("Technical")
+        for prop, sv, lv in [
+            ("Bitrate",     src["bitrate"],                 lib["bitrate"]),
+            ("Duration",    src["duration"],                lib["duration"]),
+            ("Image count", str(src["cover_count"]),        str(lib["cover_count"])),
+            ("Cover dims",  src["cover_dims"] or "None",    lib["cover_dims"] or "None"),
+            ("Cover size",  src["cover_size_kb"] or "None", lib["cover_size_kb"] or "None"),
+        ]:
+            _add_row(prop, sv, lv)
+
+        # Tags (union, sorted) — these rows are editable.
+        _add_header("Tags")
+        all_keys = sorted(set(src["tags"]) | set(lib["tags"]))
+        for key in all_keys:
+            _add_row(key,
+                     src["tags"].get(key, ""),
+                     lib["tags"].get(key, ""),
+                     tag_key=key)
+
+        # File
+        _add_header("File")
+        _add_row("Filename",
+                 os.path.basename(src_path) if src_path else "",
+                 os.path.basename(lib_path) if lib_path else "")
+        _add_row("Full path", src_path or "", lib_path or "")
+
+        def _fsize(p: str) -> str:
+            if not p:
+                return ""
+            try:
+                n = os.path.getsize(p)
+                for unit in ("B", "KB", "MB", "GB"):
+                    if n < 1024:
+                        return f"{n:.1f} {unit}"
+                    n /= 1024
+                return f"{n:.1f} GB"
+            except OSError:
+                return "—"
+
+        _add_row("File size", _fsize(src_path), _fsize(lib_path))
+
+    # ------------------------------------------------------------------ #
+    # Inline tag editing                                                   #
+    # ------------------------------------------------------------------ #
+
+    # Map tree-column id to (values tuple index, side, attribute path).
+    _EDIT_COLS = {"#2": ("local", 1), "#3": ("lib", 2)}
+
+    def _on_tag_double_click(self, event) -> None:
+        """Begin in-place editing of a tag value (Local or Lib column)."""
+        # Commit any prior edit first.
+        if self._edit_entry is not None:
+            self._edit_entry.event_generate("<Return>")
+
+        iid = self._tree.identify_row(event.y)
+        col = self._tree.identify_column(event.x)
+        if not iid or col not in self._EDIT_COLS:
+            return
+        if iid not in self._tag_row_keys:
+            # Header / technical / file rows are not editable.
+            return
+
+        side, val_idx = self._EDIT_COLS[col]
+        path = self._local_path if side == "local" else self._lib_path
+        if not path:
+            return     # No file loaded on that side → nothing to edit.
+
+        bbox = self._tree.bbox(iid, col)
+        if not bbox:
+            return
+        x, y, w, h = bbox
+
+        tag_key  = self._tag_row_keys[iid]
+        cur_vals = list(self._tree.item(iid, "values"))
+        current  = cur_vals[val_idx]
+
+        var = tk.StringVar(value=current)
+        entry = tk.Entry(
+            self._tree, textvariable=var,
+            font=("Segoe UI", 9), relief=tk.SOLID, bd=1,
+        )
+        entry.place(x=x, y=y, width=w, height=h)
+        entry.select_range(0, tk.END)
+        entry.focus_set()
+        self._edit_entry = entry
+
+        done = [False]
+
+        def commit(_e=None):
+            if done[0]:
+                return "break"
+            done[0] = True
+            new_val = var.get().strip()
+            entry.destroy()
+            if self._edit_entry is entry:
+                self._edit_entry = None
+            if new_val == current:
+                return "break"
+            ok = self._write_flac_tag(path, tag_key, new_val)
+            if not ok:
+                return "break"
+            cur_vals[val_idx] = new_val
+            # Recompute diff colouring for this row.
+            local_v, lib_v = cur_vals[1], cur_vals[2]
+            differs = (local_v != lib_v) and bool(local_v or lib_v) \
+                      and self._local_path and self._lib_path
+            existing_tags = self._tree.item(iid, "tags") or ()
+            keep = [t for t in existing_tags
+                    if t not in ("diff", "same", "even")]
+            keep.append("diff" if differs else "same")
+            self._tree.item(iid, values=cur_vals, tags=tuple(keep))
+            return "break"
+
+        def cancel(_e=None):
+            if done[0]:
+                return "break"
+            done[0] = True
+            entry.destroy()
+            if self._edit_entry is entry:
+                self._edit_entry = None
+            return "break"
+
+        entry.bind("<Return>",   commit)
+        entry.bind("<Tab>",      commit)
+        entry.bind("<Escape>",   cancel)
+        entry.bind("<FocusOut>", commit)
+
+    @staticmethod
+    def _write_flac_tag(path: str, tag_key: str, value: str) -> bool:
+        """Write *value* under *tag_key* in the FLAC at *path*.
+
+        An empty string deletes the tag.  Returns True on success.
+        """
+        try:
+            flac = FLAC(path)
+            key = tag_key.lower()
+            if value == "":
+                if key in flac:
+                    del flac[key]
+            else:
+                flac[key] = [value]
+            flac.save()
+            return True
+        except Exception as exc:
+            messagebox.showerror(
+                "Tag save failed",
+                f"Could not save tag {tag_key!r} to:\n{path}\n\n{exc}",
+            )
+            return False
+
+    # ------------------------------------------------------------------ #
+    # Cover right-click → copy image to clipboard                          #
+    # ------------------------------------------------------------------ #
+
+    def _on_cover_right_click(self, event, *, is_local: bool) -> None:
+        path = self._local_path if is_local else self._lib_path
+        data = self._local_cover_bytes if is_local else self._lib_cover_bytes
+        # No file loaded on that side at all → no actions are meaningful.
+        if not path and not data:
+            return
+        menu = tk.Menu(self, tearoff=0)
+        if data:
+            menu.add_command(
+                label="📋  Copy Image to Clipboard",
+                command=lambda d=data: self._copy_cover_to_clipboard(d),
+            )
+        # Embed from clipboard — available whenever a FLAC file is loaded on
+        # that side, even if it currently has no cover art.
+        if path and path.lower().endswith(".flac"):
+            menu.add_command(
+                label="🖼  Embed cover art from clipboard",
+                command=lambda local=is_local: self._embed_cover_from_clipboard(
+                    is_local=local),
+            )
+        if menu.index("end") is None:
+            return
+        menu.tk_popup(event.x_root, event.y_root)
+
+    # ------------------------------------------------------------------ #
+    # Embed cover art from clipboard                                       #
+    # ------------------------------------------------------------------ #
+
+    def _embed_cover_from_clipboard(self, *, is_local: bool) -> None:
+        """Read clipboard image, prompt for confirmation, embed into the file."""
+        from PIL import Image, ImageGrab
+
+        path = self._local_path if is_local else self._lib_path
+        if not path:
+            return
+
+        # ── Grab from clipboard ── #
+        try:
+            img = ImageGrab.grabclipboard()
+        except Exception as exc:
+            messagebox.showerror("Clipboard error", str(exc), parent=self)
+            return
+        if not isinstance(img, Image.Image):
+            messagebox.showinfo(
+                "No image in clipboard",
+                "The clipboard does not contain an image.\n\n"
+                "Copy an image first, then try again.",
+                parent=self,
+            )
+            return
+
+        # ── Encode → JPEG or PNG (PNG only if alpha) ── #
+        import io as _io
+        buf = _io.BytesIO()
+        if img.mode in ("RGBA", "LA", "PA"):
+            img.save(buf, "PNG")
+            mime = "image/png"
+        else:
+            img = img.convert("RGB")
+            img.save(buf, "JPEG", quality=95)
+            mime = "image/jpeg"
+        img_bytes = buf.getvalue()
+
+        # ── Confirmation dialog (reuses Scan-tab's _PasteCoverArtDialog) ── #
+        dlg = _PasteCoverArtDialog(self.winfo_toplevel(),
+                                   img, img_bytes, mime, 1)
+        self.wait_window(dlg)
+        if not dlg.confirmed:
+            return
+
+        # ── Write to FLAC ── #
+        from mutagen.flac import Picture
+        try:
+            flac = FLAC(path)
+            flac.clear_pictures()
+            pic         = Picture()
+            pic.type    = 3                                  # Front cover
+            pic.mime    = mime
+            pic.width   = img.size[0]
+            pic.height  = img.size[1]
+            pic.depth   = 32 if img.mode in ("RGBA", "LA") else 24
+            pic.data    = img_bytes
+            flac.add_picture(pic)
+            flac.save()
+            get_logger("scan_details_embed_cover").info(
+                f"Embedded cover art ({'local' if is_local else 'lib'}): {path}")
+        except Exception as exc:
+            messagebox.showerror(
+                "Embed failed",
+                f"Could not embed cover art into:\n{path}\n\n{exc}",
+                parent=self,
+            )
+            return
+
+        # ── Refresh the panel so the new cover shows immediately ── #
+        self.show(self._local_path, self._lib_path)
+
+    @staticmethod
+    def _copy_cover_to_clipboard(data: bytes) -> None:
+        """Copy *data* (encoded image bytes) to the Windows clipboard (CF_DIB)."""
+        import ctypes
+        import io
+        try:
+            from PIL import Image
+            img = Image.open(io.BytesIO(data)).convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, "BMP")
+            dib = buf.getvalue()[14:]
+
+            GMEM_MOVEABLE = 0x0002
+            CF_DIB        = 8
+            k32 = ctypes.windll.kernel32
+            u32 = ctypes.windll.user32
+            k32.GlobalAlloc.restype   = ctypes.c_void_p
+            k32.GlobalAlloc.argtypes  = [ctypes.c_uint, ctypes.c_size_t]
+            k32.GlobalLock.restype    = ctypes.c_void_p
+            k32.GlobalLock.argtypes   = [ctypes.c_void_p]
+            k32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+            u32.SetClipboardData.restype  = ctypes.c_void_p
+            u32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+            u32.OpenClipboard(0)
+            try:
+                u32.EmptyClipboard()
+                h = k32.GlobalAlloc(GMEM_MOVEABLE, len(dib))
+                p = k32.GlobalLock(h)
+                ctypes.memmove(p, dib, len(dib))
+                k32.GlobalUnlock(h)
+                u32.SetClipboardData(CF_DIB, h)
+            finally:
+                u32.CloseClipboard()
+        except Exception as exc:
+            messagebox.showerror("Copy failed", str(exc))
 
 
 def format_size(size_bytes: int) -> str:
