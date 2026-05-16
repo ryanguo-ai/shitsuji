@@ -2615,6 +2615,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
                 if clicked_vals[1] in ("🟡", "🟢"):
                     menu.add_command(
                         label="⬆  Update Track in Lib",
+                        accelerator="Shift+U",
                         command=lambda: self._open_update_track_in_lib(item),
                     )
                     menu.add_separator()
@@ -2633,6 +2634,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
             n = len(selected)
             menu.add_command(
                 label=f"🗑  Delete {n} File{'s' if n != 1 else ''} from Disk",
+                accelerator="Shift+Delete",
                 command=self._delete_selected_files,
             )
             menu.add_separator()

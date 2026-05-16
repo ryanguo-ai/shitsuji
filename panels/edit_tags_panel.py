@@ -278,7 +278,7 @@ class EditTagsPanel(tk.Toplevel):
             self._tree.item(iid, "values")[0].upper()
             for iid in self._tree.get_children()
         }
-        default_tag = "ALBUM" if "ALBUM" not in existing_tags else ""
+        default_tag = "ALBUM"
 
         dlg = tk.Toplevel(self)
         dlg.title("Add Tag")
@@ -336,7 +336,7 @@ class EditTagsPanel(tk.Toplevel):
         y = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_reqheight()) // 2
         dlg.geometry(f"+{x}+{y}")
 
-        name_cb.focus_set()
+        val_entry.focus_set()
 
     # ------------------------------------------------------------------ #
     # Delete                                                               #

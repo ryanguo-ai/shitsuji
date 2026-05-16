@@ -331,6 +331,7 @@ class ScanFoldersTab(tk.Frame):
         # Always available: remove from list
         menu.add_command(
             label=f"✖  Remove {n} Folder{'s' if n != 1 else ''} from List",
+            accelerator="Delete",
             command=self._on_delete_key,
         )
 

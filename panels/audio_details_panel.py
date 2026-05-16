@@ -297,7 +297,7 @@ class AudioDetailsPanel(tk.Frame):
         y = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_reqheight()) // 2
         dlg.geometry(f"+{x}+{y}")
 
-        name_cb.focus_set()
+        val_entry.focus_set()
 
     def _mark_dirty(self):
         self._dirty = True
