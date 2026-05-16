@@ -75,6 +75,8 @@ class ScanFoldersTab(tk.Frame):
         """
         super().__init__(master, bg="#f5f5f5")
         self._on_scan_folders = on_scan_folders
+        self._sort_col: str | None = None
+        self._sort_rev: bool = False
         self._build_ui()
 
     # ------------------------------------------------------------------ #
@@ -90,6 +92,11 @@ class ScanFoldersTab(tk.Frame):
             font=("Segoe UI", 16, "bold"),
             fg="white", bg="#2c3e50",
         ).pack(side=tk.LEFT)
+
+        # ── Toolbar row ── #
+        toolbar = tk.Frame(self, bg="#f5f5f5", pady=8, padx=16)
+        toolbar.pack(fill=tk.X)
+        ttk.Button(toolbar, text="🔄  Refresh", command=self._refresh).pack(side=tk.LEFT)
 
         # ── Hint label ── #
         tk.Label(
@@ -112,8 +119,9 @@ class ScanFoldersTab(tk.Frame):
             tree_frame, columns=col_ids,
             show="headings", selectmode="extended",
         )
+        _cmd = lambda c: (lambda: self._sort_column(c))
         for cid, heading, width, anchor, stretch in self._COLS:
-            self._tree.heading(cid, text=heading, anchor=anchor)
+            self._tree.heading(cid, text=heading, anchor=anchor, command=_cmd(cid))
             self._tree.column(cid, width=width, anchor=anchor, stretch=stretch)
 
         vsb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL,   command=self._tree.yview)
@@ -152,6 +160,82 @@ class ScanFoldersTab(tk.Frame):
             font=("Segoe UI", 9), bg="#bdc3c7",
             anchor="w", padx=8,
         ).pack(fill=tk.X)
+
+    # ------------------------------------------------------------------ #
+    # Column sorting                                                       #
+    # ------------------------------------------------------------------ #
+
+    _COL_LABELS = {
+        "folder":      "Folder Path",
+        "flac":        "FLAC",
+        "mp3":         "MP3",
+        "other_audio": "Other Audio",
+        "other":       "Other Files",
+        "total":       "Total",
+    }
+    _NUMERIC_COLS = {"flac", "mp3", "other_audio", "other", "total"}
+
+    def _sort_column(self, col: str):
+        """Sort rows by *col*, toggling direction on repeated clicks."""
+        if self._sort_col == col:
+            self._sort_rev = not self._sort_rev
+        else:
+            self._sort_col = col
+            self._sort_rev = False
+
+        if col in self._NUMERIC_COLS:
+            key_fn = lambda iid: int(self._tree.set(iid, col) or 0)
+        else:
+            key_fn = lambda iid: self._tree.set(iid, col).lower()
+
+        items = sorted(self._tree.get_children(), key=key_fn, reverse=self._sort_rev)
+        for i, iid in enumerate(items):
+            self._tree.move(iid, "", i)
+
+        arrow = " ▲" if not self._sort_rev else " ▼"
+        for c, label in self._COL_LABELS.items():
+            self._tree.heading(c, text=label + (arrow if c == col else ""))
+
+    # ------------------------------------------------------------------ #
+    # Refresh                                                              #
+    # ------------------------------------------------------------------ #
+
+    def _refresh(self):
+        """Re-scan every listed folder; remove rows whose folder no longer exists."""
+        items = self._tree.get_children()
+        if not items:
+            self._status_var.set("Nothing to refresh.")
+            return
+
+        removed = 0
+        updated = 0
+        for iid in items:
+            folder = self._tree.set(iid, "folder")
+            if not os.path.isdir(folder):
+                self._tree.delete(iid)
+                removed += 1
+                _log.info(f"Refresh: removed missing folder {folder}")
+                continue
+
+            counts = _scan_folder_types(folder)
+            tag    = "has_flac" if counts["flac"] > 0 else "no_flac"
+            self._tree.item(iid, tags=(tag,), values=(
+                folder,
+                counts["flac"],
+                counts["mp3"],
+                counts["other_audio"],
+                counts["other"],
+                counts["total"],
+            ))
+            updated += 1
+
+        total = len(self._tree.get_children())
+        parts = [f"Refreshed {updated} folder{'s' if updated != 1 else ''}"]
+        if removed:
+            parts.append(f"{removed} missing folder{'s' if removed != 1 else ''} removed")
+        parts.append(f"{total} remaining")
+        self._status_var.set(" — ".join(parts) + ".")
+        _log.info(f"Refresh complete: {updated} updated, {removed} removed")
 
     # ------------------------------------------------------------------ #
     # DnD                                                                  #
