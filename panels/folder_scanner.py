@@ -1726,6 +1726,8 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self.tree.bind("<Shift-Delete>", lambda _: self._delete_selected_files())
         self.tree.bind("<Shift-u>", lambda _: self._hotkey_update_track_in_lib())
         self.tree.bind("<Shift-U>", lambda _: self._hotkey_update_track_in_lib())
+        self.tree.bind("<Shift-e>", lambda _: self._hotkey_edit_tags())
+        self.tree.bind("<Shift-E>", lambda _: self._hotkey_edit_tags())
         self.tree.bind("<Control-a>", lambda _: self.tree.selection_set(self.tree.get_children()))
         self._kb_sel = attach_keyboard_range_selection(self.tree)
 
@@ -2755,6 +2757,16 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         except Exception as exc:
             log.error(f"Update lib track failed: {lib_path} — {exc}")
             messagebox.showerror("Update failed", str(exc))
+
+    def _hotkey_edit_tags(self):
+        """Shift+E handler — opens Edit Tags for any FLAC files in the current selection."""
+        selected = self.tree.selection()
+        if not selected:
+            return
+        paths = [self.tree.item(i, "values")[2] for i in selected]
+        flac_paths = [p for p in paths if p.lower().endswith(".flac")]
+        if flac_paths:
+            self._edit_tags(flac_paths)
 
     def _hotkey_update_track_in_lib(self):
         """Shift+U handler — runs Update Track in Lib for a single 🟡/🟢 selection."""

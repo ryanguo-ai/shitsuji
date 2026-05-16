@@ -111,6 +111,7 @@ class AudioMenuMixin:
         if flac_paths:
             menu.add_command(
                 label="🏷  Edit Tags",
+                accelerator="Shift+E",
                 command=lambda: self._edit_tags(flac_paths),
             )
             menu.add_command(

@@ -312,6 +312,8 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
         self.tree.bind("<Button-3>",         self._on_row_right_click)
         self.tree.bind("<Control-a>", lambda _: self.tree.selection_set(self.tree.get_children()))
+        self.tree.bind("<Shift-e>", lambda _: self._hotkey_edit_tags())
+        self.tree.bind("<Shift-E>", lambda _: self._hotkey_edit_tags())
         self._kb_sel = attach_keyboard_range_selection(self.tree)
 
         # Pagination (inside left pane, below tree)
@@ -488,6 +490,16 @@ class SearchTab(tk.Frame, AudioMenuMixin):
     # ------------------------------------------------------------------ #
     # Right-click context menu                                             #
     # ------------------------------------------------------------------ #
+
+    def _hotkey_edit_tags(self):
+        """Shift+E handler — opens Edit Tags for any FLAC files in the current selection."""
+        selected = self.tree.selection()
+        if not selected:
+            return
+        paths = [self.tree.item(i, "values")[2] for i in selected]
+        flac_paths = [p for p in paths if p.lower().endswith(".flac")]
+        if flac_paths:
+            self._edit_tags(flac_paths)
 
     def _on_row_right_click(self, event):
         item = self.tree.identify_row(event.y)
