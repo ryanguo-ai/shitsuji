@@ -286,6 +286,37 @@ def find_track_by_metadata(artist: str, title: str, album: str) -> list[sqlite3.
         ).fetchall()
 
 
+def find_track_by_artist_title_album(
+    artist: str, title: str, album: str
+) -> list[sqlite3.Row]:
+    """Return track_info rows matching artist+title+album (case-insensitive)."""
+    with _connect() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM track_info
+             WHERE lower(trim(artist)) = lower(trim(?))
+               AND lower(trim(title))  = lower(trim(?))
+               AND lower(trim(album))  = lower(trim(?))
+             ORDER BY updated_at DESC
+            """,
+            (artist, title, album),
+        ).fetchall()
+
+
+def find_track_by_artist_title(artist: str, title: str) -> list[sqlite3.Row]:
+    """Return track_info rows matching artist+title (case-insensitive)."""
+    with _connect() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM track_info
+             WHERE lower(trim(artist)) = lower(trim(?))
+               AND lower(trim(title))  = lower(trim(?))
+             ORDER BY updated_at DESC
+            """,
+            (artist, title),
+        ).fetchall()
+
+
 def find_track_by_artist_title_bitrate(
     artist: str, title: str, bitrate: str
 ) -> list[sqlite3.Row]:

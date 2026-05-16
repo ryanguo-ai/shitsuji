@@ -28,7 +28,7 @@ def _fmt_size(n: int) -> str:
 
 class AudioDetailsPanel(tk.Frame):
 
-    def __init__(self, master, on_after_save=None):
+    def __init__(self, master, on_after_save=None, title: str = "File Details"):
         super().__init__(master, bg="#f0f0f0", width=280)
         self._cover_photo = None
         self._cover_image_data: bytes | None = None   # raw bytes of current cover art
@@ -36,6 +36,7 @@ class AudioDetailsPanel(tk.Frame):
         self._dirty = False
         self._deleted_items: set = set()   # item IDs marked for deletion
         self._on_after_save = on_after_save  # optional callable(path: str)
+        self._title = title
         self._build()
 
     # ------------------------------------------------------------------ #
@@ -44,7 +45,7 @@ class AudioDetailsPanel(tk.Frame):
 
     def _build(self):
         tk.Label(
-            self, text="File Details",
+            self, text=self._title,
             font=("Segoe UI", 11, "bold"),
             bg="#f0f0f0", fg="#2c3e50", anchor="w", padx=10, pady=8,
         ).pack(fill=tk.X)

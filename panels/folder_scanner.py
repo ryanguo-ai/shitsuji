@@ -17,6 +17,61 @@ from panels.settings_panel import load_settings, save_settings, MUSIC_LIB_PARTIT
 from panels.logger import get_logger
 
 
+class _ScanFileDetailsPanel(tk.Frame):
+    """Side-by-side detail panel for the Scan tab.
+
+    Left  pane → selected local scan file.
+    Right pane → matching track in the music library (blank when none).
+    Both panes are full ``AudioDetailsPanel`` instances so tag editing /
+    cover-art operations work on either side.
+    """
+
+    def __init__(self, master):
+        super().__init__(master, bg="#f0f0f0")
+
+        self._paned = tk.PanedWindow(
+            self, orient=tk.HORIZONTAL,
+            sashrelief=tk.RAISED, sashwidth=4,
+            bg="#bdc3c7",
+        )
+        self._paned.pack(fill=tk.BOTH, expand=True)
+
+        self.local_panel = AudioDetailsPanel(self._paned, title="Local File")
+        self.lib_panel   = AudioDetailsPanel(self._paned, title="Lib Track")
+        self._paned.add(self.local_panel, stretch="always", minsize=220)
+        self._paned.add(self.lib_panel,   stretch="always", minsize=220)
+
+    # ------------------------------------------------------------------ #
+    # Public API                                                           #
+    # ------------------------------------------------------------------ #
+
+    def show(self, local_path: str, lib_path: str) -> None:
+        """Populate panes. Pass empty string to leave a pane blank."""
+        if local_path:
+            try:
+                self.local_panel.show_flac(local_path)
+            except Exception:
+                self.local_panel.clear()
+        else:
+            self.local_panel.clear()
+
+        if lib_path:
+            try:
+                self.lib_panel.show_flac(lib_path)
+            except Exception:
+                self.lib_panel.clear()
+        else:
+            self.lib_panel.clear()
+
+    def show_flac(self, path: str) -> None:
+        """Backwards-compatible single-pane API (lib pane is cleared)."""
+        self.show(path, "")
+
+    def clear(self) -> None:
+        self.local_panel.clear()
+        self.lib_panel.clear()
+
+
 def format_size(size_bytes: int) -> str:
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if size_bytes < 1024:
@@ -1180,9 +1235,9 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self.tree.drop_target_register(DND_FILES)
         self.tree.dnd_bind("<<Drop>>", self._on_drop)
 
-        # ── Right: detail panel ───────────────────────────────────────── #
-        self._detail_panel = AudioDetailsPanel(self._paned)
-        self._paned.add(self._detail_panel, stretch="never", minsize=240)
+        # ── Right: detail panel (Local | Lib side-by-side) ────────────── #
+        self._detail_panel = _ScanFileDetailsPanel(self._paned)
+        self._paned.add(self._detail_panel, stretch="never", minsize=480)
 
         self._paned.bind("<ButtonRelease-1>", self._on_sash_release)
         self.after(150, self._restore_sash)
@@ -1354,7 +1409,15 @@ class ScanTab(tk.Frame, AudioMenuMixin):
     def _check_tracks(self):
         """Refresh Lib Ready and In Lib columns for every row in the table.
 
-        Matching key: (artist, title, bitrate).  MD5 and album are NOT used.
+        Status logic (artist + title are always required):
+          🟢  exact match — same (artist, title, album, bitrate) exists in lib.
+          🟡  partial match — same (artist, title) exists in lib but the album
+              and/or bitrate differs.  User can compare and decide which to keep.
+          ⬛  not in lib — no row with same (artist, title).
+
+        MD5 is not consulted here (too expensive); for users who care about
+        byte-level differences the right-click "Compare track with Lib" / "Update
+        Track in Lib" actions surface the underlying file diffs.
         """
         from panels.database import get_track_info
 
@@ -1366,16 +1429,21 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self.status_var.set("Loading library index…")
         self.update_idletasks()
 
-        # Build (artist, title, bitrate) → present-in-lib lookup from DB.
-        atb_set: set[tuple[str, str, str]] = set()
+        # Two lookups against the DB:
+        #   ataB_set: (artist, title, album, bitrate)  → exact match → 🟢
+        #   at_set:   (artist, title)                  → at least one lib row → 🟡
+        ataB_set: set[tuple[str, str, str, str]] = set()
+        at_set:   set[tuple[str, str]]           = set()
         for row in get_track_info():
-            atb_set.add((
-                (row["artist"]  or "").strip().lower(),
-                (row["title"]   or "").strip().lower(),
-                (row["bitrate"] or "").strip().lower(),
-            ))
+            a  = (row["artist"]  or "").strip().lower()
+            t  = (row["title"]   or "").strip().lower()
+            al = (row["album"]   or "").strip().lower()
+            br = (row["bitrate"] or "").strip().lower()
+            if a and t:
+                ataB_set.add((a, t, al, br))
+                at_set.add((a, t))
 
-        found = ready = 0
+        found = partial = ready = 0
         total = len(items)
         for i, item in enumerate(items):
             vals      = list(self.tree.item(item, "values"))
@@ -1389,6 +1457,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
 
             artist  = (vals[4] or "").strip().lower()
             title   = (vals[5] or "").strip().lower()
+            album   = (vals[6] or "").strip().lower()
             bitrate = (vals[7] or "").strip().lower()
 
             # ── Lib Ready ── #
@@ -1397,11 +1466,15 @@ class ScanTab(tk.Frame, AudioMenuMixin):
             if is_ready:
                 ready += 1
 
-            # ── In Lib — match on (artist, title, bitrate) only ── #
-            if artist and title and (artist, title, bitrate) in atb_set:
+            # ── In Lib ── #
+            if artist and title and (artist, title, album, bitrate) in ataB_set:
                 vals[1]  = "🟢"
                 row_tag  = "inlib_exact"
                 found   += 1
+            elif artist and title and (artist, title) in at_set:
+                vals[1]   = "🟡"
+                row_tag   = "inlib_diff"
+                partial  += 1
             else:
                 vals[1] = "⬛"
                 row_tag = "odd" if i % 2 == 0 else "even"
@@ -1413,7 +1486,9 @@ class ScanTab(tk.Frame, AudioMenuMixin):
                 self.update_idletasks()
 
         self.status_var.set(
-            f"Check complete — {ready}/{total} lib-ready · {found}/{total} in lib."
+            f"Check complete — {ready}/{total} lib-ready · "
+            f"{found} in lib · {partial} partial match · "
+            f"{total - found - partial} not in lib."
         )
 
     # ------------------------------------------------------------------ #
@@ -2121,10 +2196,15 @@ class ScanTab(tk.Frame, AudioMenuMixin):
     def _open_update_track_in_lib(self, item):
         """Show the Update Track in Lib confirmation dialog for a single scan row.
 
-        Looks up the lib track by (artist, title, bitrate); when multiple lib rows
-        match, prefer one whose album also matches.
+        Lookup strategy (also used by the Shift+U hotkey):
+          1. Try (artist, title, album) — most specific.
+          2. Fall back to (artist, title) if step 1 finds nothing.
+        Within either set, the most-recently-updated row wins.
         """
-        from panels.database import find_track_by_artist_title_bitrate
+        from panels.database import (
+            find_track_by_artist_title_album,
+            find_track_by_artist_title,
+        )
         from panels.lib_ops import copy_track_to_lib
 
         vals     = self.tree.item(item, "values")
@@ -2132,22 +2212,18 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         artist   = (vals[4] or "").strip()
         title    = (vals[5] or "").strip()
         album    = (vals[6] or "").strip()
-        bitrate  = (vals[7] or "").strip()
 
-        matches = find_track_by_artist_title_bitrate(artist, title, bitrate)
+        matches = find_track_by_artist_title_album(artist, title, album)
+        if not matches:
+            matches = find_track_by_artist_title(artist, title)
         if not matches:
             messagebox.showinfo(
                 "No lib track found",
                 "Could not find a matching track record in the library database.\n\n"
-                f"artist={artist!r}  title={title!r}  bitrate={bitrate!r}")
+                f"artist={artist!r}  title={title!r}  album={album!r}")
             return
 
-        album_norm = album.strip().lower()
-        row = next(
-            (r for r in matches
-             if (r["album"] or "").strip().lower() == album_norm),
-            matches[0],
-        )
+        row       = matches[0]
         partition = row["partition"]
         rel_path  = row["rel_path"]
         lib_root  = self._settings.get("music_lib_paths", {}).get(partition, "")
@@ -2253,7 +2329,35 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         if not values:
             return
         full_path, file_type = values[2], values[3]
+        artist = (values[4] or "").strip()
+        title  = (values[5] or "").strip()
+        album  = (values[6] or "").strip()
+
+        # ── Resolve matching lib track (same lookup strategy as Update Track) ── #
+        lib_path = ""
+        if artist and title:
+            try:
+                from panels.database import (
+                    find_track_by_artist_title_album,
+                    find_track_by_artist_title,
+                )
+                matches = find_track_by_artist_title_album(artist, title, album)
+                if not matches:
+                    matches = find_track_by_artist_title(artist, title)
+                if matches:
+                    row = matches[0]
+                    lib_root = self._settings.get("music_lib_paths", {}).get(
+                        row["partition"], "")
+                    candidate = (
+                        os.path.join(lib_root, row["partition"], row["rel_path"])
+                        if lib_root else ""
+                    )
+                    if candidate and os.path.isfile(candidate):
+                        lib_path = candidate
+            except Exception:
+                lib_path = ""
+
         if file_type == "FLAC":
-            self._detail_panel.show_flac(full_path)
+            self._detail_panel.show(full_path, lib_path)
         else:
-            self._detail_panel.clear()
+            self._detail_panel.show("", lib_path)
