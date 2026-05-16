@@ -11,7 +11,10 @@ from mutagen.flac import FLAC
 
 from panels.audio_details_panel import AudioDetailsPanel
 from panels.audio_menu import AudioMenuMixin
-from panels.database import compute_file_md5, get_artist_name_variants, get_track_info, upsert_track_info, set_track_ranking
+from panels.database import (
+    compute_file_md5, delete_track, delete_track_info,
+    get_artist_name_variants, get_track_info, upsert_track_info, set_track_ranking,
+)
 from panels.keyboard_selection import attach_keyboard_range_selection
 from panels.logger import get_logger
 from panels.settings_panel import load_settings, save_settings
@@ -49,6 +52,130 @@ def _rank_emoji(r: int) -> str:
     if r == 5:
         return "❤️"
     return "★" * r if r > 0 else ""
+
+
+class _DeleteLibTracksDialog(tk.Toplevel):
+    """Confirmation dialog before permanently deleting tracks from the library.
+
+    Shows a table of tracks that will be deleted (file + DB record).
+    Sets ``self.confirmed = True`` and ``self.remove_empty_folders`` when the
+    user clicks the Delete button.
+    """
+
+    _COLS = [
+        ("artist",  "Artist",   150, tk.W),
+        ("title",   "Title",    180, tk.W),
+        ("album",   "Album",    130, tk.W),
+        ("bitrate", "Bitrate",   70, tk.E),
+        ("path",    "Full Path", 320, tk.W),
+    ]
+
+    def __init__(self, parent, tracks: list[dict]):
+        """
+        Parameters
+        ----------
+        tracks : list of dicts with keys: artist, title, album, bitrate,
+                 full_path, partition, rel_path
+        """
+        super().__init__(parent)
+        self.confirmed            = False
+        self.remove_empty_folders = False
+        self._tracks              = tracks
+        self._remove_empty_var    = tk.BooleanVar(value=True)
+
+        n = len(tracks)
+        self.title(f"Delete {'Track' if n == 1 else f'{n} Tracks'} — Confirm")
+        self.configure(bg="#f5f5f5")
+        self.grab_set()
+        self.minsize(800, 360)
+        self.resizable(True, True)
+        self._build()
+        self._center()
+
+    def _build(self):
+        n = len(self._tracks)
+
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)
+
+        # Header
+        hdr = tk.Frame(self, bg="#c0392b", pady=8, padx=12)
+        hdr.grid(row=0, column=0, sticky="ew")
+        tk.Label(
+            hdr, text="🗑  Delete Library Tracks",
+            font=("Segoe UI", 12, "bold"), fg="white", bg="#c0392b",
+        ).pack(side=tk.LEFT)
+
+        # Warning banner
+        summ = tk.Frame(self, bg="#fdf2f2", padx=12, pady=6)
+        summ.grid(row=1, column=0, sticky="ew")
+        tk.Label(
+            summ,
+            text=(
+                f"{n} track{'s' if n != 1 else ''} will be PERMANENTLY DELETED "
+                f"from disk and removed from the database."
+            ),
+            font=("Segoe UI", 9, "bold"), fg="#c0392b", bg="#fdf2f2",
+        ).pack(anchor="w")
+
+        # Track table
+        tbl_frame = tk.Frame(self, bg="#f5f5f5")
+        tbl_frame.grid(row=2, column=0, sticky="nsew", padx=12, pady=(8, 4))
+        tbl_frame.columnconfigure(0, weight=1)
+        tbl_frame.rowconfigure(0, weight=1)
+
+        col_ids = [c[0] for c in self._COLS]
+        tree = ttk.Treeview(tbl_frame, columns=col_ids, show="headings",
+                            selectmode="none")
+        for cid, heading, width, anchor in self._COLS:
+            tree.heading(cid, text=heading, anchor=anchor)
+            tree.column(cid, width=width, anchor=anchor,
+                        stretch=(cid == "path"))
+        tree.tag_configure("row", background="#fdf2f2")
+
+        vsb = ttk.Scrollbar(tbl_frame, orient=tk.VERTICAL,   command=tree.yview)
+        hsb = ttk.Scrollbar(tbl_frame, orient=tk.HORIZONTAL, command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+
+        for t in self._tracks:
+            tree.insert("", "end", tags=("row",), values=(
+                t.get("artist", ""), t.get("title", ""),
+                t.get("album", ""),  t.get("bitrate", ""),
+                t.get("full_path", ""),
+            ))
+
+        # Buttons row
+        btn_frame = tk.Frame(self, bg="#f5f5f5", pady=8, padx=12)
+        btn_frame.grid(row=3, column=0, sticky="ew")
+
+        ttk.Checkbutton(
+            btn_frame, text="Remove empty folders",
+            variable=self._remove_empty_var,
+        ).pack(side=tk.LEFT)
+
+        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(
+            side=tk.RIGHT, padx=(4, 0))
+        del_label = f"🗑  Delete {n} Track{'s' if n != 1 else ''}"
+        ttk.Button(
+            btn_frame, text=del_label,
+            command=self._confirm,
+        ).pack(side=tk.RIGHT)
+
+    def _confirm(self):
+        self.confirmed            = True
+        self.remove_empty_folders = self._remove_empty_var.get()
+        self.destroy()
+
+    def _center(self):
+        self.update_idletasks()
+        w  = max(self.winfo_reqwidth(),  820)
+        h  = max(self.winfo_reqheight(), 380)
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
 
 class SearchTab(tk.Frame, AudioMenuMixin):
@@ -438,6 +565,14 @@ class SearchTab(tk.Frame, AudioMenuMixin):
                 )
                 menu.add_separator()
 
+            # ── Delete tracks ── #
+            menu.add_separator()
+            n_sel = len(selected)
+            menu.add_command(
+                label=f"🗑  Delete {'Track' if n_sel == 1 else f'{n_sel} Tracks'} from Library…",
+                command=lambda iids=selected: self._delete_selected_tracks(iids),
+            )
+
         menu = self._build_audio_context_menu(paths, extra_items_fn=extra)
         menu.tk_popup(event.x_root, event.y_root)
 
@@ -536,6 +671,121 @@ class SearchTab(tk.Frame, AudioMenuMixin):
             vals = list(self.tree.item(iid, "values"))
             vals[0] = emoji
             self.tree.item(iid, values=vals)
+
+    # ------------------------------------------------------------------ #
+    # Delete tracks from library                                           #
+    # ------------------------------------------------------------------ #
+
+    def _delete_selected_tracks(self, iids):
+        """Delete selected tracks from disk, the DB, and the results list."""
+        from tkinter import messagebox
+
+        # Build track info for each iid
+        tracks = []
+        for iid in iids:
+            try:
+                track_id = int(iid.split("_", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            for r in self._results:
+                if r.get("id") == track_id:
+                    tracks.append(dict(r))
+                    break
+
+        if not tracks:
+            return
+
+        dlg = _DeleteLibTracksDialog(self.winfo_toplevel(), tracks)
+        self.wait_window(dlg)
+
+        if not dlg.confirmed:
+            return
+
+        deleted_iids:  list[str] = []
+        delete_errors: list[tuple[str, str]] = []
+        deleted_dirs:  set[str] = set()
+
+        for t in tracks:
+            full_path = t.get("full_path", "")
+            partition = t.get("partition", "")
+            rel_path  = t.get("rel_path",  "")
+
+            # Delete file from disk
+            if full_path and os.path.isfile(full_path):
+                try:
+                    os.remove(full_path)
+                    deleted_dirs.add(os.path.dirname(full_path))
+                except OSError as exc:
+                    delete_errors.append((full_path, str(exc)))
+                    continue
+            elif full_path and not os.path.isfile(full_path):
+                # File already gone — still clean up DB
+                pass
+
+            # Remove from database (cascades to track_tags / track_ranking)
+            try:
+                delete_track_info(partition, rel_path)
+                delete_track(full_path)
+            except Exception as exc:
+                _log.error(f"DB delete failed for {full_path}: {exc}")
+
+            # Mark iid for tree removal
+            iid = f"ti_{t['id']}"
+            deleted_iids.append(iid)
+
+        # Remove empty parent folders if requested
+        n_folders = 0
+        if dlg.remove_empty_folders:
+            for folder in sorted(deleted_dirs, key=len, reverse=True):
+                try:
+                    if os.path.isdir(folder) and not os.listdir(folder):
+                        os.rmdir(folder)
+                        n_folders += 1
+                except OSError:
+                    pass
+
+        # Remove from in-memory results
+        deleted_ids = {t["id"] for t in tracks if f"ti_{t['id']}" in deleted_iids}
+        self._results = [r for r in self._results if r.get("id") not in deleted_ids]
+
+        # Remove rows from tree
+        for iid in deleted_iids:
+            if self.tree.exists(iid):
+                self.tree.delete(iid)
+
+        # Clear detail panel if the selected track was deleted
+        if (self._selected_partition, self._selected_rel_path) in {
+            (t["partition"], t["rel_path"]) for t in tracks
+        }:
+            self._detail_panel.clear()
+            self._selected_partition = None
+            self._selected_rel_path  = None
+
+        # Re-stripe remaining visible rows
+        for i, iid in enumerate(self.tree.get_children()):
+            self.tree.item(iid, tags=("odd" if i % 2 == 0 else "even",))
+
+        n_del = len(deleted_iids)
+        n_err = len(delete_errors)
+
+        if delete_errors:
+            messagebox.showerror(
+                "Deletion Errors",
+                f"{n_err} file(s) could not be deleted:\n\n"
+                + "\n".join(f"• {p}\n  {e}" for p, e in delete_errors[:8]),
+                parent=self,
+            )
+
+        remaining = len(self._results)
+        status = (
+            f"Deleted {n_del} track{'s' if n_del != 1 else ''}"
+            + (f", {n_err} error{'s' if n_err != 1 else ''}" if n_err else "")
+            + (f", removed {n_folders} empty folder{'s' if n_folders != 1 else ''}" if n_folders else "")
+            + f" — {remaining} remaining."
+        )
+        self._status_var.set(status)
+        self._footer_var.set(f"{remaining} track{'s' if remaining != 1 else ''} matched.")
+        self._update_pagination_controls()
 
     # ------------------------------------------------------------------ #
     # After-save: recompute MD5 and refresh DB                            #

@@ -203,6 +203,8 @@ class _DeleteConfirmDialog(tk.Toplevel):
     def __init__(self, parent, to_delete: list, cant_delete: list):
         super().__init__(parent)
         self.confirmed = False
+        self.remove_empty_folders = False
+        self._remove_empty_var = tk.BooleanVar(value=True)
         self._to_delete   = to_delete    # (item_id, full_path, lib_row dict, scan_vals tuple)
         self._cant_delete = cant_delete  # (full_path, reason, scan_vals tuple)
 
@@ -330,9 +332,14 @@ class _DeleteConfirmDialog(tk.Toplevel):
             command=self._confirm,
             state="normal" if n_del else "disabled",
         ).pack(side=tk.RIGHT)
+        ttk.Checkbutton(
+            btn_frame, text="Remove empty folders",
+            variable=self._remove_empty_var,
+        ).pack(side=tk.LEFT)
 
     def _confirm(self):
         self.confirmed = True
+        self.remove_empty_folders = self._remove_empty_var.get()
         self.destroy()
 
     def _center(self):
@@ -833,6 +840,37 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self.status_var.set(f"Found {total} file{'s' if total != 1 else ''}  in  {folder}")
         self.footer_var.set(f"Scan complete — {total} file{'s' if total != 1 else ''} found.")
 
+    def scan_folders(self, folders: list[str]):
+        """Clear the file list and populate it from every path in *folders*.
+
+        Called externally (e.g. from the Scan Folders panel) to load a batch
+        of folders without going through the file-chooser dialog.
+        """
+        self.tree.delete(*self.tree.get_children())
+        self.status_var.set("Scanning…")
+        self.update_idletasks()
+
+        recursive   = self.recursive_var.get()
+        show_hidden = self.show_hidden_var.get()
+
+        for folder in folders:
+            if not os.path.isdir(folder):
+                continue
+            try:
+                self._populate_list(folder, show_hidden, recursive)
+            except PermissionError as exc:
+                messagebox.showerror("Permission denied", str(exc))
+
+        total = len(self.tree.get_children())
+        folder_list = ", ".join(os.path.basename(f) for f in folders[:3])
+        if len(folders) > 3:
+            folder_list += f" …+{len(folders) - 3} more"
+        self.status_var.set(
+            f"Scanned {len(folders)} folder{'s' if len(folders) != 1 else ''}"
+            f" ({folder_list}) — {total} file{'s' if total != 1 else ''} found."
+        )
+        self.footer_var.set(f"Scan complete — {total} file{'s' if total != 1 else ''} found.")
+
     def _check_tracks(self):
         """Refresh Lib Ready and In Lib columns for every row in the table."""
         from panels.database import get_track_info, compute_file_md5
@@ -989,11 +1027,13 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         # ── Execute deletions ── #
         deleted_items: list = []
         delete_errors: list[tuple[str, str]] = []
+        deleted_dirs: set[str] = set()
 
         for item, full_path, _lib_row, _sv in to_delete:
             try:
                 os.remove(full_path)
                 deleted_items.append(item)
+                deleted_dirs.add(os.path.dirname(full_path))
             except OSError as exc:
                 delete_errors.append((full_path, str(exc)))
 
@@ -1007,6 +1047,17 @@ class ScanTab(tk.Frame, AudioMenuMixin):
             if not (current_tags and current_tags[0] in _special):
                 self.tree.item(iid, tags=("odd" if i % 2 == 0 else "even",))
 
+        # ── Remove empty parent folders if requested ── #
+        n_folders_removed = 0
+        if dlg.remove_empty_folders:
+            for folder in sorted(deleted_dirs, key=len, reverse=True):
+                try:
+                    if os.path.isdir(folder) and not os.listdir(folder):
+                        os.rmdir(folder)
+                        n_folders_removed += 1
+                except OSError:
+                    pass
+
         n_del = len(deleted_items)
         n_err = len(delete_errors)
 
@@ -1018,11 +1069,13 @@ class ScanTab(tk.Frame, AudioMenuMixin):
             )
 
         remaining = len(self.tree.get_children())
-        self.status_var.set(
+        status = (
             f"Deleted {n_del} file{'s' if n_del != 1 else ''}"
             + (f", {n_err} deletion error{'s' if n_err != 1 else ''}" if n_err else "")
+            + (f", removed {n_folders_removed} empty folder{'s' if n_folders_removed != 1 else ''}" if n_folders_removed else "")
             + f" — {remaining} remaining."
         )
+        self.status_var.set(status)
         self.footer_var.set(f"{remaining} file{'s' if remaining != 1 else ''} in list.")
 
     # ------------------------------------------------------------------ #

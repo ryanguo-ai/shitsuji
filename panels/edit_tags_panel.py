@@ -122,6 +122,11 @@ class EditTagsPanel(tk.Toplevel):
             command=self._delete_selected,
         ).pack(side=tk.LEFT)
 
+        ttk.Button(
+            toolbar, text="+ Add Tag",
+            command=self._add_tag_dialog,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
         ttk.Button(toolbar, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
         ttk.Button(toolbar, text="Save",   command=self._save  ).pack(side=tk.RIGHT, padx=(0, 4))
 
@@ -254,6 +259,84 @@ class EditTagsPanel(tk.Toplevel):
         entry.bind("<Return>",   commit)
         entry.bind("<Escape>",   cancel)
         entry.bind("<FocusOut>", commit)
+
+    # ------------------------------------------------------------------ #
+    # Add new tag                                                          #
+    # ------------------------------------------------------------------ #
+
+    _COMMON_TAGS = [
+        "TITLE", "ARTIST", "ALBUM", "ALBUMARTIST", "DATE", "YEAR",
+        "TRACKNUMBER", "TOTALTRACKS", "DISCNUMBER", "TOTALDISCS",
+        "GENRE", "COMMENT", "COMPOSER", "CONDUCTOR", "LYRICIST",
+        "LYRICS", "DESCRIPTION", "LABEL", "ISRC", "BARCODE",
+        "REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_ALBUM_GAIN",
+    ]
+
+    def _add_tag_dialog(self):
+        """Open a small dialog to add a new tag to all files."""
+        existing_tags = {
+            self._tree.item(iid, "values")[0].upper()
+            for iid in self._tree.get_children()
+        }
+        default_tag = "ALBUM" if "ALBUM" not in existing_tags else ""
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Add Tag")
+        dlg.configure(bg="#f5f5f5")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        pad = {"padx": 10, "pady": 6}
+
+        tk.Label(dlg, text="Tag name:", font=("Segoe UI", 9),
+                 bg="#f5f5f5", anchor="w").grid(row=0, column=0, sticky="w", **pad)
+        name_var = tk.StringVar(value=default_tag)
+        name_cb = ttk.Combobox(dlg, textvariable=name_var,
+                               values=self._COMMON_TAGS, width=22)
+        name_cb.grid(row=0, column=1, sticky="ew", **pad)
+
+        tk.Label(dlg, text="Value:", font=("Segoe UI", 9),
+                 bg="#f5f5f5", anchor="w").grid(row=1, column=0, sticky="w", **pad)
+        val_var = tk.StringVar()
+        val_entry = ttk.Entry(dlg, textvariable=val_var, width=24)
+        val_entry.grid(row=1, column=1, sticky="ew", **pad)
+
+        err_var = tk.StringVar()
+        tk.Label(dlg, textvariable=err_var,
+                 font=("Segoe UI", 8), fg="#c0392b", bg="#f5f5f5").grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=10)
+
+        btn_row = tk.Frame(dlg, bg="#f5f5f5")
+        btn_row.grid(row=3, column=0, columnspan=2, sticky="e", padx=8, pady=(0, 8))
+
+        def commit(_=None):
+            tag = name_var.get().strip().upper()
+            val = val_var.get().strip()
+            if not tag:
+                err_var.set("Tag name is required.")
+                name_cb.focus_set()
+                return
+            if tag in existing_tags:
+                err_var.set(f'Tag "{tag}" already exists — edit it in the list.')
+                return
+            iid = self._tree.insert("", "end", values=(tag, val), tags=("edited",))
+            self._edited[iid] = (tag, val)
+            dlg.destroy()
+
+        ttk.Button(btn_row, text="Cancel", command=dlg.destroy).pack(side=tk.RIGHT, padx=(4, 0))
+        ttk.Button(btn_row, text="Add",    command=commit).pack(side=tk.RIGHT)
+
+        name_cb.bind("<Return>", commit)
+        val_entry.bind("<Return>", commit)
+        name_cb.bind("<Tab>", lambda _: (val_entry.focus_set(), "break"))
+
+        dlg.columnconfigure(1, weight=1)
+        dlg.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width()  - dlg.winfo_reqwidth())  // 2
+        y = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_reqheight()) // 2
+        dlg.geometry(f"+{x}+{y}")
+
+        name_cb.focus_set()
 
     # ------------------------------------------------------------------ #
     # Delete                                                               #

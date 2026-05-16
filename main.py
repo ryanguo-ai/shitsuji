@@ -7,6 +7,7 @@ from tkinter import ttk
 from tkinterdnd2 import TkinterDnD
 
 from panels.folder_scanner import ScanTab
+from panels.scan_folders_panel import ScanFoldersTab
 from panels.search_panel import SearchTab
 from panels.artist_panel import ArtistTab
 from panels.compare_tracks_panel import CompareTracksTab
@@ -61,6 +62,10 @@ class App(TkinterDnD.Tk):
         self._artist_tab = ArtistTab(self._notebook)
         self._notebook.add(SearchTab(self._notebook, on_search_artist=self._open_artist_search),   text="  Search In Lib  ")
         self._notebook.add(self._scan_tab,              text="  Scan  ")
+        self._notebook.add(
+            ScanFoldersTab(self._notebook, on_scan_folders=self._open_scan_folders),
+            text="  Scan Folders  ",
+        )
         self._notebook.add(self._compare_tab,           text="  Compare Tracks  ")
         self._notebook.add(self._artist_tab,            text="  Artist Info  ")
 
@@ -147,6 +152,14 @@ class App(TkinterDnD.Tk):
                 self._notebook.select(idx)
                 break
         self._artist_tab.search_artist(artist_name)
+
+    def _open_scan_folders(self, folders: list[str]):
+        """Switch to the Scan tab and populate it with *folders*."""
+        for idx in range(self._notebook.index("end")):
+            if self._notebook.tab(idx, "text").strip() == "Scan":
+                self._notebook.select(idx)
+                break
+        self._scan_tab.scan_folders(folders)
 
     def _on_close(self):
         self._settings["window_geometry"] = self.geometry()
