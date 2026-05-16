@@ -568,6 +568,419 @@ class _PasteCoverArtDialog(tk.Toplevel):
         self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
 
+# ─────────────────────────────────────────────────────────────────────────── #
+# Update Track in Lib — confirmation dialog                                   #
+# ─────────────────────────────────────────────────────────────────────────── #
+
+class _DeleteScanFileConfirmDialog(tk.Toplevel):
+    """Small modal asking the user to confirm deleting the scan file from disk.
+
+    Default selection is **No** so accidental keystrokes cannot trigger a
+    destructive action.  Arrow keys move between the two buttons; Enter
+    activates the focused one.
+
+    Sets ``self.confirmed = True`` only when the user explicitly chooses Yes.
+    """
+
+    _BTN_STYLE_NORMAL = {
+        "yes": ("#fadbd8", "#c0392b", tk.FLAT,  1),
+        "no":  ("#d0d3d4", "#2c3e50", tk.FLAT,  1),
+    }
+    _BTN_STYLE_FOCUSED = {
+        "yes": ("#c0392b", "white",   tk.SOLID, 2),
+        "no":  ("#555555", "white",   tk.SOLID, 2),
+    }
+    _BTN_KEYS = ["yes", "no"]
+
+    def __init__(self, parent, file_path: str):
+        super().__init__(parent)
+        self.confirmed = False
+        self._file_path = file_path
+        self.title("Confirm Delete")
+        self.configure(bg="#f5f5f5")
+        self.grab_set()
+        self.resizable(False, False)
+        self._build()
+        self._center()
+
+    def _build(self):
+        # ── Header ── #
+        hdr = tk.Frame(self, bg="#c0392b", pady=8, padx=16)
+        hdr.pack(fill=tk.X)
+        tk.Label(
+            hdr, text="🗑  Delete Scan File",
+            font=("Segoe UI", 11, "bold"), fg="white", bg="#c0392b",
+        ).pack(side=tk.LEFT)
+
+        # ── Body ── #
+        body = tk.Frame(self, bg="#f5f5f5", padx=20, pady=16)
+        body.pack(fill=tk.BOTH)
+        tk.Label(
+            body,
+            text="Permanently delete this scan file from disk?",
+            font=("Segoe UI", 10), fg="#2c3e50", bg="#f5f5f5",
+        ).pack(anchor="w")
+        tk.Label(
+            body, text=self._file_path,
+            font=("Segoe UI", 8), fg="#555555", bg="#f5f5f5",
+            wraplength=400, justify="left",
+        ).pack(anchor="w", pady=(4, 10))
+        tk.Label(
+            body,
+            text="⚠  This cannot be undone.",
+            font=("Segoe UI", 9, "italic"), fg="#c0392b", bg="#f5f5f5",
+        ).pack(anchor="w")
+
+        # ── Buttons ── #
+        btn_row = tk.Frame(self, bg="#ecf0f1", pady=10, padx=16)
+        btn_row.pack(fill=tk.X, side=tk.BOTTOM)
+
+        # Visual layout (left → right): [🗑 Yes, Delete] [No]
+        self._btn_yes = tk.Button(
+            btn_row, text="🗑  Yes, Delete",
+            font=("Segoe UI", 9),
+            bg="#fadbd8", fg="#c0392b",
+            activebackground="#c0392b", activeforeground="white",
+            padx=14, pady=5, cursor="hand2",
+            relief=tk.FLAT, bd=2,
+            command=self._on_yes,
+        )
+        self._btn_yes.pack(side=tk.RIGHT)
+
+        self._btn_no = tk.Button(
+            btn_row, text="No",
+            font=("Segoe UI", 9),
+            bg="#d0d3d4", fg="#2c3e50",
+            activebackground="#95a5a6", activeforeground="white",
+            padx=14, pady=5, cursor="hand2",
+            relief=tk.FLAT, bd=2,
+            command=self.destroy,
+        )
+        self._btn_no.pack(side=tk.RIGHT, padx=(0, 8))
+
+        # Nav order left→right: No(0)  Yes(1);  default = No (idx=0)
+        self._nav_buttons = [self._btn_no, self._btn_yes]
+        self._nav_idx = 0   # No is the default
+
+        for btn in self._nav_buttons:
+            btn.bind("<Left>",   self._on_left)
+            btn.bind("<Right>",  self._on_right)
+            btn.bind("<Return>", lambda e: self._nav_buttons[self._nav_idx].invoke())
+        # Esc = No
+        self.bind("<Escape>", lambda e: self.destroy())
+
+        self._apply_focus()
+        self.after_idle(lambda: self._nav_buttons[self._nav_idx].focus_set())
+
+    def _apply_focus(self):
+        for i, (btn, key) in enumerate(zip(self._nav_buttons, self._BTN_KEYS)):
+            style = (self._BTN_STYLE_FOCUSED if i == self._nav_idx
+                     else self._BTN_STYLE_NORMAL)[key]
+            btn.configure(bg=style[0], fg=style[1], relief=style[2], bd=style[3])
+
+    def _on_left(self, _event):
+        if self._nav_idx > 0:
+            self._nav_idx -= 1
+            self._apply_focus()
+            self._nav_buttons[self._nav_idx].focus_set()
+
+    def _on_right(self, _event):
+        if self._nav_idx < len(self._nav_buttons) - 1:
+            self._nav_idx += 1
+            self._apply_focus()
+            self._nav_buttons[self._nav_idx].focus_set()
+
+    def _on_yes(self):
+        self.confirmed = True
+        self.destroy()
+
+    def _center(self):
+        self.update_idletasks()
+        w = max(self.winfo_reqwidth(),  460)
+        h = max(self.winfo_reqheight(), 220)
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
+
+class _UpdateTrackInLibDialog(tk.Toplevel):
+    """Modal confirmation dialog for overwriting a lib track with a scan track.
+
+    Shows a side-by-side comparison of bitrate and cover art so the user can
+    make an informed decision before the copy is performed.
+
+    Sets ``self.confirmed = True`` when the user clicks the Update button.
+    """
+
+    _THUMB = 220   # max thumbnail dimension in px
+
+    def __init__(self, parent, src_path: str, lib_path: str,
+                 partition: str, rel_path: str):
+        super().__init__(parent)
+        self.confirmed = False
+        self._src_path   = src_path
+        self._lib_path   = lib_path
+        self._partition  = partition
+        self._rel_path   = rel_path
+        self._src_photo  = None   # keep PhotoImage refs alive
+        self._lib_photo  = None
+
+        self.title("Update Track in Lib — Confirm")
+        self.configure(bg="#f5f5f5")
+        self.grab_set()
+        self.resizable(True, True)
+        self._build()
+        self._center()
+
+    # ------------------------------------------------------------------ #
+    # UI                                                                   #
+    # ------------------------------------------------------------------ #
+
+    def _build(self):
+        from panels.compare_tracks_panel import _load_flac_info
+
+        src_info = _load_flac_info(self._src_path)
+        lib_info = _load_flac_info(self._lib_path)
+
+        # ── Header ── #
+        hdr = tk.Frame(self, bg="#2c3e50", pady=10, padx=16)
+        hdr.pack(fill=tk.X)
+        tk.Label(
+            hdr, text="⬆  Update Track in Lib",
+            font=("Segoe UI", 13, "bold"), fg="white", bg="#2c3e50",
+        ).pack(side=tk.LEFT)
+
+        # ── Metadata band ── #
+        artist = src_info["tags"].get("ARTIST", "") or lib_info["tags"].get("ARTIST", "")
+        title  = src_info["tags"].get("TITLE",  "") or lib_info["tags"].get("TITLE",  "")
+        album  = src_info["tags"].get("ALBUM",  "") or lib_info["tags"].get("ALBUM",  "")
+        meta_text = "  •  ".join(filter(None, [
+            f"Artist: {artist}" if artist else "",
+            f"Album: {album}"   if album  else "",
+            f"Title: {title}"   if title  else "",
+        ])) or "(no tags)"
+
+        meta_bar = tk.Frame(self, bg="#eaf0fb", padx=16, pady=6)
+        meta_bar.pack(fill=tk.X)
+        tk.Label(
+            meta_bar, text=meta_text,
+            font=("Segoe UI", 9), fg="#2c3e50", bg="#eaf0fb",
+            anchor="w", wraplength=560,
+        ).pack(anchor="w")
+
+        # ── Side-by-side comparison body ── #
+        body = tk.Frame(self, bg="#f5f5f5", padx=16, pady=12)
+        body.pack(fill=tk.BOTH, expand=True)
+        body.columnconfigure(0, weight=1, uniform="col")
+        body.columnconfigure(2, weight=1, uniform="col")
+
+        self._build_side(body, column=0, label="📁  Scan Track",
+                         info=src_info, is_src=True)
+
+        # Vertical divider
+        tk.Frame(body, bg="#bdc3c7", width=1).grid(
+            row=0, column=1, sticky="ns", padx=14)
+
+        self._build_side(body, column=2, label="📚  Lib Track",
+                         info=lib_info, is_src=False)
+
+        # ── Warning banner ── #
+        warn = tk.Frame(self, bg="#fdf2f2", padx=16, pady=6)
+        warn.pack(fill=tk.X)
+        tk.Label(
+            warn,
+            text="⚠  The Lib track will be permanently overwritten.  This cannot be undone.",
+            font=("Segoe UI", 9, "italic"), fg="#c0392b", bg="#fdf2f2",
+        ).pack(anchor="w")
+
+        # ── Buttons ── #
+        # Visual layout (left → right): [🗑 Delete Scan File]  …  [⬆ Update Lib Track] [Cancel]
+        btn_row = tk.Frame(self, bg="#ecf0f1", pady=10, padx=16)
+        btn_row.pack(fill=tk.X, side=tk.BOTTOM)
+
+        self._btn_delete = tk.Button(
+            btn_row, text="🗑  Delete Scan File",
+            font=("Segoe UI", 9),
+            bg="#fadbd8", fg="#c0392b",
+            activebackground="#c0392b", activeforeground="white",
+            padx=14, pady=5, cursor="hand2",
+            relief=tk.FLAT, bd=2,
+            command=self._on_delete_file,
+        )
+        self._btn_delete.pack(side=tk.LEFT)
+
+        self._btn_cancel = tk.Button(
+            btn_row, text="Cancel",
+            font=("Segoe UI", 9),
+            bg="#d0d3d4", fg="#2c3e50",
+            activebackground="#95a5a6", activeforeground="white",
+            padx=14, pady=5, cursor="hand2",
+            relief=tk.FLAT, bd=2,
+            command=self.destroy,
+        )
+        self._btn_cancel.pack(side=tk.RIGHT)
+
+        self._btn_update = tk.Button(
+            btn_row, text="⬆  Update Lib Track",
+            font=("Segoe UI", 9),
+            bg="#d0d3d4", fg="#2c3e50",
+            activebackground="#1f618d", activeforeground="white",
+            padx=14, pady=5, cursor="hand2",
+            relief=tk.FLAT, bd=2,
+            command=self._confirm,
+        )
+        self._btn_update.pack(side=tk.RIGHT, padx=(0, 8))
+
+        # Left-to-right nav order: Delete(0)  Update(1)  Cancel(2)
+        # Default selection: Update Lib Track (idx=1)
+        self._nav_buttons = [self._btn_delete, self._btn_update, self._btn_cancel]
+        self._nav_idx = 1
+
+        for btn in self._nav_buttons:
+            btn.bind("<Left>",   self._on_btn_left)
+            btn.bind("<Right>",  self._on_btn_right)
+            btn.bind("<Return>", lambda e: self._nav_buttons[self._nav_idx].invoke())
+
+        self._apply_btn_focus()
+        self.after_idle(lambda: self._nav_buttons[self._nav_idx].focus_set())
+
+    def _build_side(self, parent, *, column: int, label: str, info: dict, is_src: bool):
+        """Render one column (scan or lib) into *parent* grid."""
+        frm = tk.Frame(parent, bg="#f5f5f5")
+        frm.grid(row=0, column=column, sticky="nsew")
+
+        # Section title
+        tk.Label(frm, text=label, font=("Segoe UI", 10, "bold"),
+                 fg="#2c3e50", bg="#f5f5f5").pack(anchor="w")
+
+        # File name
+        fname = os.path.basename(info["path"]) or "—"
+        tk.Label(frm, text=fname, font=("Segoe UI", 8),
+                 fg="#555555", bg="#f5f5f5",
+                 wraplength=260, justify="left").pack(anchor="w", pady=(0, 6))
+
+        # Cover art thumbnail
+        cover_label = tk.Label(frm, bg="#d5d8dc", text="No cover art",
+                               relief=tk.GROOVE)
+        cover_label.pack(anchor="w")
+
+        dims_var = tk.StringVar(value="")
+        tk.Label(frm, textvariable=dims_var, font=("Segoe UI", 8),
+                 fg="#888888", bg="#f5f5f5").pack(anchor="w")
+
+        self._render_cover(cover_label, info["cover"], info["cover_dims"],
+                           dims_var, is_src=is_src)
+
+        # Bitrate row
+        self._info_row(frm, "Bitrate",
+                       info["bitrate"] or "—",
+                       highlight=(info["bitrate"] != ""))
+
+        # Cover size row
+        self._info_row(frm, "Cover size", info["cover_size_kb"] or "—")
+
+        # Cover dimensions row
+        self._info_row(frm, "Cover dims", info["cover_dims"] or "—")
+
+        # Full path (small)
+        tk.Label(frm, text=info["path"], font=("Segoe UI", 7),
+                 fg="#aaaaaa", bg="#f5f5f5",
+                 wraplength=260, justify="left").pack(anchor="w", pady=(8, 0))
+
+    @staticmethod
+    def _info_row(parent, label: str, value: str, *, highlight: bool = False):
+        row = tk.Frame(parent, bg="#f5f5f5")
+        row.pack(anchor="w", pady=2)
+        tk.Label(row, text=f"{label}:", font=("Segoe UI", 9, "bold"),
+                 fg="#2c3e50", bg="#f5f5f5", width=12, anchor="e").pack(side=tk.LEFT)
+        tk.Label(row, text=value,
+                 font=("Segoe UI", 9, "bold" if highlight else "normal"),
+                 fg="#1e8449" if highlight else "#333333",
+                 bg="#f5f5f5").pack(side=tk.LEFT, padx=(4, 0))
+
+    def _render_cover(self, label: tk.Label, data: bytes | None,
+                      dims: str, dims_var: tk.StringVar, *, is_src: bool):
+        if data:
+            try:
+                import io as _io
+                from PIL import Image, ImageTk
+                img = Image.open(_io.BytesIO(data))
+                img.thumbnail((self._THUMB, self._THUMB))
+                photo = ImageTk.PhotoImage(img)
+                label.configure(image=photo, text="", bg="#ffffff",
+                                width=photo.width(), height=photo.height())
+                if is_src:
+                    self._src_photo = photo
+                else:
+                    self._lib_photo = photo
+                dims_var.set(dims)
+                return
+            except Exception:
+                pass
+        label.configure(image="", text="No cover art", bg="#d5d8dc",
+                        width=20, height=5)
+        dims_var.set("")
+
+    # ------------------------------------------------------------------ #
+
+    # Per-button style tables: (bg, fg, relief, bd)
+    _BTN_STYLE_NORMAL = {
+        "delete": ("#fadbd8", "#c0392b", tk.FLAT,  1),
+        "update": ("#d0d3d4", "#2c3e50", tk.FLAT,  1),
+        "cancel": ("#d0d3d4", "#2c3e50", tk.FLAT,  1),
+    }
+    _BTN_STYLE_FOCUSED = {
+        "delete": ("#c0392b", "white",   tk.SOLID, 2),
+        "update": ("#2980b9", "white",   tk.SOLID, 2),
+        "cancel": ("#555555", "white",   tk.SOLID, 2),
+    }
+    _BTN_KEYS = ["delete", "update", "cancel"]
+
+    def _apply_btn_focus(self):
+        """Highlight the focused button; restore normal style for the others."""
+        for i, (btn, key) in enumerate(zip(self._nav_buttons, self._BTN_KEYS)):
+            style = (self._BTN_STYLE_FOCUSED if i == self._nav_idx
+                     else self._BTN_STYLE_NORMAL)[key]
+            btn.configure(bg=style[0], fg=style[1], relief=style[2], bd=style[3])
+
+    def _on_btn_left(self, _event):
+        if self._nav_idx > 0:
+            self._nav_idx -= 1
+            self._apply_btn_focus()
+            self._nav_buttons[self._nav_idx].focus_set()
+
+    def _on_btn_right(self, _event):
+        if self._nav_idx < len(self._nav_buttons) - 1:
+            self._nav_idx += 1
+            self._apply_btn_focus()
+            self._nav_buttons[self._nav_idx].focus_set()
+
+    def _on_delete_file(self):
+        """Ask for confirmation then delete the scan file from disk."""
+        dlg = _DeleteScanFileConfirmDialog(self, self._src_path)
+        self.wait_window(dlg)
+        if not dlg.confirmed:
+            return
+        log = get_logger("update_track_in_lib")
+        try:
+            os.remove(self._src_path)
+            log.info(f"Deleted scan file: {self._src_path}")
+            self.destroy()
+        except OSError as exc:
+            log.error(f"Delete scan file failed: {self._src_path} — {exc}")
+            messagebox.showerror("Delete failed", str(exc), parent=self)
+
+    def _confirm(self):
+        self.confirmed = True
+        self.destroy()
+
+    def _center(self):
+        self.update_idletasks()
+        w = max(self.winfo_reqwidth(),  620)
+        h = max(self.winfo_reqheight(), 460)
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
+
 class ScanTab(tk.Frame, AudioMenuMixin):
 
     def __init__(self, master, on_compare=None, on_search_artist=None):
@@ -694,6 +1107,9 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self.tree.bind("<Button-3>", self._on_row_right_click)
         self.tree.bind("<Double-1>", self._on_cell_double_click)
         self.tree.bind("<Delete>", self._on_delete_key)
+        self.tree.bind("<Shift-Delete>", lambda _: self._delete_selected_files())
+        self.tree.bind("<Shift-u>", lambda _: self._hotkey_update_track_in_lib())
+        self.tree.bind("<Shift-U>", lambda _: self._hotkey_update_track_in_lib())
         self.tree.bind("<Control-a>", lambda _: self.tree.selection_set(self.tree.get_children()))
         self._kb_sel = attach_keyboard_range_selection(self.tree)
 
@@ -1569,6 +1985,16 @@ class ScanTab(tk.Frame, AudioMenuMixin):
                     )
                     menu.add_separator()
 
+            # ── Update Track in Lib (single 🟡 rows — metadata match, different file) ── #
+            if len(selected) == 1:
+                clicked_vals = self.tree.item(item, "values")
+                if clicked_vals[1] == "🟡":
+                    menu.add_command(
+                        label="⬆  Update Track in Lib",
+                        command=lambda: self._open_update_track_in_lib(item),
+                    )
+                    menu.add_separator()
+
             # ── Send to Lib submenu ── #
             lib_menu = tk.Menu(menu, tearoff=0)
             for partition in MUSIC_LIB_PARTITIONS:
@@ -1627,6 +2053,68 @@ class ScanTab(tk.Frame, AudioMenuMixin):
             return
 
         self._on_compare(src_path, lib_path, partition, rel_path)
+
+    def _open_update_track_in_lib(self, item):
+        """Show the Update Track in Lib confirmation dialog for a single scan row."""
+        from panels.database import find_track_by_metadata
+        from panels.lib_ops import copy_track_to_lib
+
+        vals     = self.tree.item(item, "values")
+        src_path = vals[2]
+        artist   = (vals[4] or "").strip()
+        title    = (vals[5] or "").strip()
+        album    = (vals[6] or "").strip()
+
+        matches = find_track_by_metadata(artist, title, album)
+        if not matches:
+            messagebox.showinfo(
+                "No lib track found",
+                "Could not find a matching track record in the library database.")
+            return
+
+        row       = matches[0]
+        partition = row["partition"]
+        rel_path  = row["rel_path"]
+        lib_root  = self._settings.get("music_lib_paths", {}).get(partition, "")
+        lib_path  = os.path.join(lib_root, partition, rel_path) if lib_root else ""
+
+        if not lib_path or not os.path.isfile(lib_path):
+            messagebox.showwarning(
+                "Lib file not found",
+                f"DB record found but file is missing:\n{lib_path or '(path unknown)'}")
+            return
+
+        dlg = _UpdateTrackInLibDialog(
+            self.winfo_toplevel(), src_path, lib_path, partition, rel_path)
+        self.wait_window(dlg)
+
+        if not dlg.confirmed:
+            return
+
+        log = get_logger("update_track_in_lib")
+        try:
+            copy_track_to_lib(src_path, lib_path, partition, rel_path)
+            log.info(f"Updated lib track: {lib_path}")
+            self.status_var.set(
+                f"✔  Lib track updated: {os.path.basename(lib_path)}"
+            )
+            # Refresh In Lib indicator for the updated row
+            vals_list    = list(vals)
+            vals_list[1] = "🟢"
+            self.tree.item(item, values=vals_list)
+        except Exception as exc:
+            log.error(f"Update lib track failed: {lib_path} — {exc}")
+            messagebox.showerror("Update failed", str(exc))
+
+    def _hotkey_update_track_in_lib(self):
+        """Shift+U handler — runs Update Track in Lib for a single 🟡 selection."""
+        selected = self.tree.selection()
+        if len(selected) != 1:
+            return
+        item = selected[0]
+        if self.tree.item(item, "values")[1] != "🟡":
+            return
+        self._open_update_track_in_lib(item)
 
     def _open_send_to_lib(self, paths: list[str], partition: str):
         from panels.send_to_lib_panel import SendToLibPanel
