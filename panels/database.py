@@ -286,6 +286,27 @@ def find_track_by_metadata(artist: str, title: str, album: str) -> list[sqlite3.
         ).fetchall()
 
 
+def find_track_by_artist_title_bitrate(
+    artist: str, title: str, bitrate: str
+) -> list[sqlite3.Row]:
+    """Return track_info rows whose artist/title/bitrate match (case-insensitive).
+
+    Used by Compare / Update Track flows which now key on (artist, title, bitrate)
+    rather than (artist, title, album).
+    """
+    with _connect() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM track_info
+             WHERE lower(trim(artist))  = lower(trim(?))
+               AND lower(trim(title))   = lower(trim(?))
+               AND lower(trim(bitrate)) = lower(trim(?))
+             ORDER BY updated_at DESC
+            """,
+            (artist, title, bitrate),
+        ).fetchall()
+
+
 # ------------------------------------------------------------------ #
 # track_ranking helpers                                                #
 # ------------------------------------------------------------------ #

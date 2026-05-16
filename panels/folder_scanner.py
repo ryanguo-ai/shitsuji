@@ -445,16 +445,78 @@ class _DeleteFilesDialog(tk.Toplevel):
                         values=(sv[4], sv[5], sv[6], sv[3], sv[8], sv[2]))
 
         # ── Buttons ── #
+        # Visual layout (left → right): [🗑 Delete N File(s)] [Cancel]
+        # Default selection (focused): Cancel — safer default for a destructive action.
         btn_frame = tk.Frame(self, bg="#f5f5f5", pady=8, padx=12)
         btn_frame.grid(row=3, column=0, sticky="ew")
 
-        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(
-            side=tk.RIGHT, padx=(4, 0))
-        ttk.Button(
+        self._btn_cancel = tk.Button(
+            btn_frame, text="Cancel",
+            font=("Segoe UI", 9),
+            bg="#d0d3d4", fg="#2c3e50",
+            activebackground="#95a5a6", activeforeground="white",
+            padx=14, pady=5, cursor="hand2",
+            relief=tk.FLAT, bd=2,
+            command=self.destroy,
+        )
+        self._btn_cancel.pack(side=tk.RIGHT, padx=(4, 0))
+
+        self._btn_delete = tk.Button(
             btn_frame,
             text=f"🗑  Delete {n} File{'s' if n != 1 else ''}",
+            font=("Segoe UI", 9),
+            bg="#fadbd8", fg="#c0392b",
+            activebackground="#c0392b", activeforeground="white",
+            padx=14, pady=5, cursor="hand2",
+            relief=tk.FLAT, bd=2,
             command=self._confirm,
-        ).pack(side=tk.RIGHT)
+        )
+        self._btn_delete.pack(side=tk.RIGHT)
+
+        # Left-to-right nav order: Delete(0)  Cancel(1);  default = Cancel (idx=1)
+        self._nav_buttons = [self._btn_delete, self._btn_cancel]
+        self._nav_idx = 1
+
+        for btn in self._nav_buttons:
+            btn.bind("<Left>",   self._on_btn_left)
+            btn.bind("<Right>",  self._on_btn_right)
+            btn.bind("<Return>", lambda e: self._nav_buttons[self._nav_idx].invoke())
+        # Esc closes the dialog (same as Cancel)
+        self.bind("<Escape>", lambda e: self.destroy())
+
+        self._apply_btn_focus()
+        self.after_idle(lambda: self._nav_buttons[self._nav_idx].focus_set())
+
+    # ------------------------------------------------------------------ #
+
+    # Per-button style tables: (bg, fg, relief, bd)
+    _BTN_STYLE_NORMAL = {
+        "delete": ("#fadbd8", "#c0392b", tk.FLAT,  1),
+        "cancel": ("#d0d3d4", "#2c3e50", tk.FLAT,  1),
+    }
+    _BTN_STYLE_FOCUSED = {
+        "delete": ("#c0392b", "white",   tk.SOLID, 2),
+        "cancel": ("#555555", "white",   tk.SOLID, 2),
+    }
+    _BTN_KEYS = ["delete", "cancel"]
+
+    def _apply_btn_focus(self):
+        for i, (btn, key) in enumerate(zip(self._nav_buttons, self._BTN_KEYS)):
+            style = (self._BTN_STYLE_FOCUSED if i == self._nav_idx
+                     else self._BTN_STYLE_NORMAL)[key]
+            btn.configure(bg=style[0], fg=style[1], relief=style[2], bd=style[3])
+
+    def _on_btn_left(self, _event):
+        if self._nav_idx > 0:
+            self._nav_idx -= 1
+            self._apply_btn_focus()
+            self._nav_buttons[self._nav_idx].focus_set()
+
+    def _on_btn_right(self, _event):
+        if self._nav_idx < len(self._nav_buttons) - 1:
+            self._nav_idx += 1
+            self._apply_btn_focus()
+            self._nav_buttons[self._nav_idx].focus_set()
 
     def _confirm(self):
         self.confirmed = True
@@ -839,6 +901,8 @@ class _UpdateTrackInLibDialog(tk.Toplevel):
             btn.bind("<Left>",   self._on_btn_left)
             btn.bind("<Right>",  self._on_btn_right)
             btn.bind("<Return>", lambda e: self._nav_buttons[self._nav_idx].invoke())
+        # Esc closes the dialog (same as Cancel)
+        self.bind("<Escape>", lambda e: self.destroy())
 
         self._apply_btn_focus()
         self.after_idle(lambda: self._nav_buttons[self._nav_idx].focus_set())
@@ -1288,8 +1352,11 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self.footer_var.set(f"Scan complete — {total} file{'s' if total != 1 else ''} found.")
 
     def _check_tracks(self):
-        """Refresh Lib Ready and In Lib columns for every row in the table."""
-        from panels.database import get_track_info, compute_file_md5
+        """Refresh Lib Ready and In Lib columns for every row in the table.
+
+        Matching key: (artist, title, bitrate).  MD5 and album are NOT used.
+        """
+        from panels.database import get_track_info
 
         items = self.tree.get_children()
         if not items:
@@ -1299,18 +1366,13 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self.status_var.set("Loading library index…")
         self.update_idletasks()
 
-        # Build two lookup structures from DB (single query):
-        #   md5_set  — set of md5 digests present in lib (exact-match detection)
-        #   aat_set  — set of (artist, title, album) tuples (metadata-match detection)
-        md5_set: set[str]              = set()
-        aat_set: set[tuple[str,str,str]] = set()
+        # Build (artist, title, bitrate) → present-in-lib lookup from DB.
+        atb_set: set[tuple[str, str, str]] = set()
         for row in get_track_info():
-            if row["file_md5"]:
-                md5_set.add(row["file_md5"].strip().lower())
-            aat_set.add((
-                (row["artist"] or "").strip().lower(),
-                (row["title"]  or "").strip().lower(),
-                (row["album"]  or "").strip().lower(),
+            atb_set.add((
+                (row["artist"]  or "").strip().lower(),
+                (row["title"]   or "").strip().lower(),
+                (row["bitrate"] or "").strip().lower(),
             ))
 
         found = ready = 0
@@ -1325,9 +1387,9 @@ class ScanTab(tk.Frame, AudioMenuMixin):
                 a, t, al, br = _read_audio_tags(full_path)
                 vals[4], vals[5], vals[6], vals[7] = a, t, al, br
 
-            artist = (vals[4] or "").strip().lower()
-            title  = (vals[5] or "").strip().lower()
-            album  = (vals[6] or "").strip().lower()
+            artist  = (vals[4] or "").strip().lower()
+            title   = (vals[5] or "").strip().lower()
+            bitrate = (vals[7] or "").strip().lower()
 
             # ── Lib Ready ── #
             is_ready = _check_lib_ready(full_path)
@@ -1335,24 +1397,12 @@ class ScanTab(tk.Frame, AudioMenuMixin):
             if is_ready:
                 ready += 1
 
-            # ── In Lib — MD5-based matching ── #
-            try:
-                file_md5 = compute_file_md5(full_path).lower()
-            except Exception:
-                file_md5 = ""
-
-            if file_md5 and file_md5 in md5_set:
-                # Exact duplicate — same bytes already in lib
+            # ── In Lib — match on (artist, title, bitrate) only ── #
+            if artist and title and (artist, title, bitrate) in atb_set:
                 vals[1]  = "🟢"
                 row_tag  = "inlib_exact"
                 found   += 1
-            elif bool(artist and title) and (artist, title, album) in aat_set:
-                # Metadata match but different file content (e.g. re-encode/remaster)
-                vals[1] = "🟡"
-                row_tag = "inlib_diff"
-                found  += 1
             else:
-                # Not in lib at all
                 vals[1] = "⬛"
                 row_tag = "odd" if i % 2 == 0 else "even"
 
@@ -1975,20 +2025,22 @@ class ScanTab(tk.Frame, AudioMenuMixin):
                     )
                     menu.add_separator()
 
-            # ── Compare track with Lib (only for single 🟡 rows) ── #
+            # ── Compare track with Lib (single 🟡 or 🟢 rows) ── #
             if len(selected) == 1 and self._on_compare is not None:
                 clicked_vals = self.tree.item(item, "values")
-                if clicked_vals[1] == "🟡":
+                if clicked_vals[1] in ("🟡", "🟢"):
                     menu.add_command(
                         label="🔍  Compare track with Lib",
                         command=lambda: self._open_compare(item),
                     )
                     menu.add_separator()
 
-            # ── Update Track in Lib (single 🟡 rows — metadata match, different file) ── #
+            # ── Update Track in Lib (single 🟡 or 🟢 rows) ── #
+            # 🟡 = metadata match, different file bytes
+            # 🟢 = matched in lib (still useful — e.g. cover art may differ)
             if len(selected) == 1:
                 clicked_vals = self.tree.item(item, "values")
-                if clicked_vals[1] == "🟡":
+                if clicked_vals[1] in ("🟡", "🟢"):
                     menu.add_command(
                         label="⬆  Update Track in Lib",
                         command=lambda: self._open_update_track_in_lib(item),
@@ -2024,23 +2076,35 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         menu.tk_popup(event.x_root, event.y_root)
 
     def _open_compare(self, item):
-        """Find the matching lib track and invoke the on_compare callback."""
-        from panels.database import find_track_by_metadata
+        """Find the matching lib track and invoke the on_compare callback.
+
+        Lookup key: (artist, title, bitrate) — same as Check Tracks.
+        If multiple lib tracks match, prefer one whose album also matches; otherwise
+        fall back to the most-recently-updated row.
+        """
+        from panels.database import find_track_by_artist_title_bitrate
         vals = self.tree.item(item, "values")
         src_path = vals[2]
         artist   = (vals[4] or "").strip()
         title    = (vals[5] or "").strip()
         album    = (vals[6] or "").strip()
+        bitrate  = (vals[7] or "").strip()
 
-        matches = find_track_by_metadata(artist, title, album)
+        matches = find_track_by_artist_title_bitrate(artist, title, bitrate)
         if not matches:
             messagebox.showinfo(
                 "No lib track found",
-                "Could not find a matching track record in the library database.")
+                "Could not find a matching track record in the library database.\n\n"
+                f"artist={artist!r}  title={title!r}  bitrate={bitrate!r}")
             return
 
-        # Use the most-recently-updated match
-        row = matches[0]
+        # Prefer a match whose album is also the same (case-insensitive, trimmed).
+        album_norm = album.strip().lower()
+        row = next(
+            (r for r in matches
+             if (r["album"] or "").strip().lower() == album_norm),
+            matches[0],
+        )
         partition = row["partition"]
         rel_path  = row["rel_path"]
         lib_root  = self._settings.get("music_lib_paths", {}).get(partition, "")
@@ -2055,8 +2119,12 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self._on_compare(src_path, lib_path, partition, rel_path)
 
     def _open_update_track_in_lib(self, item):
-        """Show the Update Track in Lib confirmation dialog for a single scan row."""
-        from panels.database import find_track_by_metadata
+        """Show the Update Track in Lib confirmation dialog for a single scan row.
+
+        Looks up the lib track by (artist, title, bitrate); when multiple lib rows
+        match, prefer one whose album also matches.
+        """
+        from panels.database import find_track_by_artist_title_bitrate
         from panels.lib_ops import copy_track_to_lib
 
         vals     = self.tree.item(item, "values")
@@ -2064,15 +2132,22 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         artist   = (vals[4] or "").strip()
         title    = (vals[5] or "").strip()
         album    = (vals[6] or "").strip()
+        bitrate  = (vals[7] or "").strip()
 
-        matches = find_track_by_metadata(artist, title, album)
+        matches = find_track_by_artist_title_bitrate(artist, title, bitrate)
         if not matches:
             messagebox.showinfo(
                 "No lib track found",
-                "Could not find a matching track record in the library database.")
+                "Could not find a matching track record in the library database.\n\n"
+                f"artist={artist!r}  title={title!r}  bitrate={bitrate!r}")
             return
 
-        row       = matches[0]
+        album_norm = album.strip().lower()
+        row = next(
+            (r for r in matches
+             if (r["album"] or "").strip().lower() == album_norm),
+            matches[0],
+        )
         partition = row["partition"]
         rel_path  = row["rel_path"]
         lib_root  = self._settings.get("music_lib_paths", {}).get(partition, "")
@@ -2107,12 +2182,12 @@ class ScanTab(tk.Frame, AudioMenuMixin):
             messagebox.showerror("Update failed", str(exc))
 
     def _hotkey_update_track_in_lib(self):
-        """Shift+U handler — runs Update Track in Lib for a single 🟡 selection."""
+        """Shift+U handler — runs Update Track in Lib for a single 🟡/🟢 selection."""
         selected = self.tree.selection()
         if len(selected) != 1:
             return
         item = selected[0]
-        if self.tree.item(item, "values")[1] != "🟡":
+        if self.tree.item(item, "values")[1] not in ("🟡", "🟢"):
             return
         self._open_update_track_in_lib(item)
 
