@@ -2,6 +2,7 @@
 Folder Scanner UI — browse and list all files in a selected directory.
 """
 
+import json
 import os
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -714,6 +715,466 @@ class _NormalizeResultWindow(tk.Toplevel):
         self.update_idletasks()
         w = max(self.winfo_reqwidth(),  700)
         h = max(self.winfo_reqheight(), 380)
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
+
+class _RestoreTitlesFromAIDialog(tk.Toplevel):
+    """Paste-an-AI-response → preview → tag-update dialog.
+
+    Accepts a list of source scan rows (with artist/title/album/path) and lets
+    the user paste the JSON array produced by the "Restore Original-Language
+    Names" prompt.  Matches AI entries to source rows by (artist, title, album)
+    case-insensitively (with looser fallbacks), shows a preview tree the user
+    can edit / toggle row-by-row, and on confirm writes ARTIST / TITLE / ALBUM
+    Vorbis tags into each selected FLAC file.
+    """
+
+    # Treeview columns
+    _COLS = (
+        "apply",
+        "cur_artist",  "new_artist",
+        "cur_title",   "new_title",
+        "cur_album",   "new_album",
+    )
+    # Columns the user can edit inline (double-click).
+    _EDITABLE_COLS = {"#3": "new_artist", "#5": "new_title", "#7": "new_album"}
+
+    def __init__(self, parent, panel, rows: list[dict]):
+        super().__init__(parent)
+        self._panel = panel
+        self._rows  = rows
+        # tree iid → dict(scan_iid, path, cur_*, new_*, apply, matched)
+        self._preview: dict[str, dict] = {}
+
+        self.title("Restore Tags from AI Response")
+        self.configure(bg="#f5f5f5")
+        self.minsize(1100, 600)
+        self.resizable(True, True)
+        self.grab_set()
+        self._build()
+        self._center()
+
+    # ------------------------------------------------------------------ #
+    # UI                                                                   #
+    # ------------------------------------------------------------------ #
+
+    def _build(self):
+        hdr = tk.Frame(self, bg="#2c3e50", pady=8, padx=12)
+        hdr.pack(fill=tk.X)
+        tk.Label(
+            hdr, text="🤖  Restore Tags from AI Response",
+            font=("Segoe UI", 12, "bold"), fg="white", bg="#2c3e50",
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            hdr,
+            text=f"{len(self._rows)} source track{'s' if len(self._rows) != 1 else ''}",
+            font=("Segoe UI", 9), fg="#bdc3c7", bg="#2c3e50",
+        ).pack(side=tk.RIGHT)
+
+        tk.Label(
+            self,
+            text="Paste the JSON array returned by the AI, then click "
+                 "“Parse & Preview”.  Double-click a “New …” cell to edit "
+                 "before confirming, or untick the checkbox to skip a row.",
+            font=("Segoe UI", 9, "italic"), fg="#555555", bg="#f5f5f5",
+            anchor="w", justify="left", wraplength=1060,
+        ).pack(fill=tk.X, padx=12, pady=(8, 4))
+
+        # ── JSON input ── #
+        input_frame = tk.LabelFrame(
+            self, text="  AI JSON response  ",
+            font=("Segoe UI", 9, "bold"), bg="#f5f5f5", fg="#2c3e50",
+            padx=8, pady=6,
+        )
+        input_frame.pack(fill=tk.BOTH, padx=12, pady=(0, 6))
+
+        self._json_text = tk.Text(
+            input_frame, height=6, wrap="word",
+            font=("Consolas", 9), bg="white",
+        )
+        self._json_text.pack(fill=tk.BOTH, expand=True)
+
+        btn_row = tk.Frame(self, bg="#f5f5f5")
+        btn_row.pack(fill=tk.X, padx=12, pady=(0, 6))
+        ttk.Button(
+            btn_row, text="📥  Paste from Clipboard",
+            command=self._paste_from_clipboard,
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            btn_row, text="🔍  Parse & Preview",
+            command=self._parse_and_preview,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
+        # ── Preview tree ── #
+        prev_frame = tk.LabelFrame(
+            self, text="  Tag update preview  ",
+            font=("Segoe UI", 9, "bold"), bg="#f5f5f5", fg="#2c3e50",
+            padx=6, pady=4,
+        )
+        prev_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 6))
+
+        self._tree = ttk.Treeview(
+            prev_frame, columns=self._COLS, show="headings", selectmode="browse",
+        )
+        self._tree.heading("apply",      text="✓",             anchor=tk.CENTER)
+        self._tree.heading("cur_artist", text="Current Artist", anchor=tk.W)
+        self._tree.heading("new_artist", text="New Artist",     anchor=tk.W)
+        self._tree.heading("cur_title",  text="Current Title",  anchor=tk.W)
+        self._tree.heading("new_title",  text="New Title",      anchor=tk.W)
+        self._tree.heading("cur_album",  text="Current Album",  anchor=tk.W)
+        self._tree.heading("new_album",  text="New Album",      anchor=tk.W)
+        self._tree.column("apply",      width=40,  anchor=tk.CENTER, stretch=False)
+        self._tree.column("cur_artist", width=150, stretch=True)
+        self._tree.column("new_artist", width=160, stretch=True)
+        self._tree.column("cur_title",  width=180, stretch=True)
+        self._tree.column("new_title",  width=190, stretch=True)
+        self._tree.column("cur_album",  width=170, stretch=True)
+        self._tree.column("new_album",  width=180, stretch=True)
+
+        vsb = ttk.Scrollbar(prev_frame, orient=tk.VERTICAL,   command=self._tree.yview)
+        hsb = ttk.Scrollbar(prev_frame, orient=tk.HORIZONTAL, command=self._tree.xview)
+        self._tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.pack(side=tk.RIGHT,  fill=tk.Y)
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
+        self._tree.pack(fill=tk.BOTH, expand=True)
+
+        self._tree.tag_configure("matched",   background="#eafaf1")
+        self._tree.tag_configure("nomatch",   background="#fdf2f2", foreground="#922b21")
+        self._tree.tag_configure("skipped",   background="#ecf0f1", foreground="#7f8c8d")
+        self._tree.tag_configure("unchanged", background="#fdf6e3", foreground="#7d5a00")
+
+        self._tree.bind("<Button-1>", self._on_click)
+        self._tree.bind("<Double-1>", self._on_double_click)
+
+        # Status / counts
+        self._status_var = tk.StringVar(value="Paste a response above and click Parse & Preview.")
+        tk.Label(
+            self, textvariable=self._status_var,
+            font=("Segoe UI", 9, "italic"), fg="#7f8c8d", bg="#f5f5f5",
+            anchor="w", padx=12,
+        ).pack(fill=tk.X)
+
+        # ── Footer buttons ── #
+        foot = tk.Frame(self, bg="#ecf0f1", pady=8, padx=12)
+        foot.pack(fill=tk.X, side=tk.BOTTOM)
+        ttk.Button(foot, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Button(
+            foot, text="✅  Write Tags",
+            command=self._confirm,
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+    # ------------------------------------------------------------------ #
+    # Actions                                                              #
+    # ------------------------------------------------------------------ #
+
+    def _paste_from_clipboard(self):
+        try:
+            data = self.clipboard_get()
+        except tk.TclError:
+            messagebox.showwarning(
+                "Clipboard empty", "Nothing to paste.", parent=self,
+            )
+            return
+        self._json_text.delete("1.0", "end")
+        self._json_text.insert("1.0", data)
+
+    def _parse_and_preview(self):
+        raw = self._json_text.get("1.0", "end").strip()
+        if not raw:
+            messagebox.showwarning(
+                "Empty input", "Paste the AI response first.", parent=self,
+            )
+            return
+
+        # Strip optional ```json … ``` fences just in case.
+        if raw.startswith("```"):
+            first_nl = raw.find("\n")
+            if first_nl != -1:
+                raw = raw[first_nl + 1:]
+            if raw.rstrip().endswith("```"):
+                raw = raw.rstrip()[:-3]
+            raw = raw.strip()
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            messagebox.showerror(
+                "Invalid JSON",
+                f"Could not parse the response as JSON:\n\n{exc}",
+                parent=self,
+            )
+            return
+
+        if not isinstance(data, list):
+            messagebox.showerror(
+                "Unexpected JSON",
+                "Expected a JSON array of objects with 'source' and "
+                "'normalized' keys.",
+                parent=self,
+            )
+            return
+
+        # Index AI entries by progressively looser keys.
+        ai_by_full:   dict[tuple[str, str, str], dict] = {}
+        ai_by_at:     dict[tuple[str, str],      dict] = {}
+        ai_by_title:  dict[str,                  dict] = {}
+
+        def norm(s) -> str:
+            return (s or "").strip().lower()
+
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            src   = entry.get("source")     or {}
+            norm_ = entry.get("normalized") or {}
+            if not isinstance(src, dict) or not isinstance(norm_, dict):
+                continue
+            s_a, s_t, s_al = norm(src.get("artist")), norm(src.get("title")), norm(src.get("album"))
+            ai_by_full.setdefault((s_a, s_t, s_al), entry)
+            ai_by_at.setdefault((s_a, s_t),         entry)
+            ai_by_title.setdefault(s_t,             entry)
+
+        # Clear and rebuild preview from current sources.
+        for iid in self._tree.get_children():
+            self._tree.delete(iid)
+        self._preview.clear()
+
+        ready = matched_same = unmatched = 0
+        for row in self._rows:
+            s_a, s_t, s_al = norm(row["artist"]), norm(row["title"]), norm(row["album"])
+            entry = (
+                ai_by_full.get((s_a, s_t, s_al))
+                or ai_by_at.get((s_a, s_t))
+                or ai_by_title.get(s_t)
+            )
+
+            cur_artist = row["artist"]
+            cur_title  = row["title"]
+            cur_album  = row["album"]
+
+            if entry is None:
+                iid = self._tree.insert(
+                    "", "end",
+                    values=(
+                        "·",
+                        cur_artist, "(no AI match)",
+                        cur_title,  "(no AI match)",
+                        cur_album,  "(no AI match)",
+                    ),
+                    tags=("nomatch",),
+                )
+                self._preview[iid] = {
+                    "scan_iid":   row["iid"],
+                    "cur_artist": cur_artist,
+                    "cur_title":  cur_title,
+                    "cur_album":  cur_album,
+                    "new_artist": cur_artist,
+                    "new_title":  cur_title,
+                    "new_album":  cur_album,
+                    "apply":      False,
+                    "matched":    False,
+                }
+                unmatched += 1
+                continue
+
+            norm_     = entry.get("normalized") or {}
+            n_artist  = (norm_.get("artist") or cur_artist).strip() or cur_artist
+            n_title   = (norm_.get("title")  or cur_title).strip()  or cur_title
+            n_album   = (norm_.get("album")  or cur_album).strip()  or cur_album
+
+            is_same = (
+                n_artist == cur_artist
+                and n_title  == cur_title
+                and n_album  == cur_album
+            )
+            tag = "unchanged" if is_same else "matched"
+            iid = self._tree.insert(
+                "", "end",
+                values=(
+                    " " if is_same else "✓",
+                    cur_artist, n_artist,
+                    cur_title,  n_title,
+                    cur_album,  n_album,
+                ),
+                tags=(tag,),
+            )
+            self._preview[iid] = {
+                "scan_iid":   row["iid"],
+                "cur_artist": cur_artist,
+                "cur_title":  cur_title,
+                "cur_album":  cur_album,
+                "new_artist": n_artist,
+                "new_title":  n_title,
+                "new_album":  n_album,
+                "apply":      not is_same,
+                "matched":    True,
+            }
+            if is_same:
+                matched_same += 1
+            else:
+                ready += 1
+
+        self._status_var.set(
+            f"Parsed {len(data)} AI entr{'y' if len(data) == 1 else 'ies'} · "
+            f"{ready} ready to update · "
+            f"{matched_same} already match · "
+            f"{unmatched} no match."
+        )
+
+    def _on_click(self, event):
+        # Toggle the Apply checkbox when its column is clicked.
+        region = self._tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+        if self._tree.identify_column(event.x) != "#1":
+            return
+        iid = self._tree.identify_row(event.y)
+        if not iid or iid not in self._preview:
+            return
+        info = self._preview[iid]
+        if not info["matched"]:
+            return
+        info["apply"] = not info["apply"]
+        self._refresh_row(iid)
+
+    def _on_double_click(self, event):
+        if self._tree.identify("region", event.x, event.y) != "cell":
+            return
+        col = self._tree.identify_column(event.x)
+        field = self._EDITABLE_COLS.get(col)
+        if not field:
+            return
+        iid = self._tree.identify_row(event.y)
+        if not iid or iid not in self._preview:
+            return
+        info = self._preview[iid]
+        if not info["matched"]:
+            return
+        self._start_inline_edit(iid, col, field)
+
+    def _start_inline_edit(self, iid: str, col: str, field: str):
+        x, y, w, h = self._tree.bbox(iid, col)
+        if not w:
+            return
+        info     = self._preview[iid]
+        edit_var = tk.StringVar(value=info[field])
+        entry = tk.Entry(self._tree, textvariable=edit_var, font=("Segoe UI", 9))
+        entry.place(x=x, y=y, width=w, height=h)
+        entry.icursor("end")
+        entry.focus_set()
+
+        def commit(_=None):
+            info[field] = edit_var.get().strip()
+            # Recompute "unchanged" status after edit
+            is_same = (
+                info["new_artist"] == info["cur_artist"]
+                and info["new_title"]  == info["cur_title"]
+                and info["new_album"]  == info["cur_album"]
+            )
+            if is_same:
+                info["apply"] = False
+            entry.destroy()
+            self._refresh_row(iid)
+
+        def cancel(_=None):
+            entry.destroy()
+
+        entry.bind("<Return>",   commit)
+        entry.bind("<FocusOut>", commit)
+        entry.bind("<Escape>",   cancel)
+
+    def _refresh_row(self, iid: str):
+        info = self._preview[iid]
+        is_same = (
+            info["new_artist"] == info["cur_artist"]
+            and info["new_title"]  == info["cur_title"]
+            and info["new_album"]  == info["cur_album"]
+        )
+        if not info["matched"]:
+            tag      = "nomatch"
+            apply_mk = "·"
+            new_a    = "(no AI match)"
+            new_t    = "(no AI match)"
+            new_al   = "(no AI match)"
+        else:
+            new_a, new_t, new_al = info["new_artist"], info["new_title"], info["new_album"]
+            if is_same:
+                tag      = "unchanged"
+                apply_mk = " "
+            else:
+                tag      = "matched" if info["apply"] else "skipped"
+                apply_mk = "✓" if info["apply"] else " "
+        self._tree.item(
+            iid,
+            values=(
+                apply_mk,
+                info["cur_artist"], new_a,
+                info["cur_title"],  new_t,
+                info["cur_album"],  new_al,
+            ),
+            tags=(tag,),
+        )
+
+    def _confirm(self):
+        targets = [
+            (iid, info) for iid, info in self._preview.items()
+            if info["matched"] and info["apply"]
+        ]
+        if not targets:
+            messagebox.showinfo(
+                "Nothing to update",
+                "No rows are checked for updating.",
+                parent=self,
+            )
+            return
+
+        ok = err = 0
+        errors: list[tuple[str, str]] = []
+        for iid, info in targets:
+            success, msg = self._panel._apply_restored_tags(
+                info["scan_iid"],
+                info["new_artist"],
+                info["new_title"],
+                info["new_album"],
+            )
+            if success:
+                ok += 1
+                # Mark row as completed: the current values now equal the new ones.
+                info["cur_artist"] = info["new_artist"]
+                info["cur_title"]  = info["new_title"]
+                info["cur_album"]  = info["new_album"]
+                info["apply"]      = False
+                self._refresh_row(iid)
+            else:
+                err += 1
+                errors.append((info["cur_title"] or info["scan_iid"], msg))
+
+        self._status_var.set(
+            f"Updated {ok} file{'s' if ok != 1 else ''}"
+            + (f", {err} error{'s' if err != 1 else ''}." if err else ".")
+        )
+
+        try:
+            self._panel.status_var.set(
+                f"🤖  Restore Tags — {ok} updated"
+                + (f", {err} error{'s' if err != 1 else ''}." if err else ".")
+            )
+        except Exception:
+            pass
+
+        if errors:
+            preview = "\n".join(f"• {name}: {msg}" for name, msg in errors[:8])
+            if len(errors) > 8:
+                preview += f"\n…and {len(errors) - 8} more."
+            messagebox.showwarning(
+                "Some files were not updated", preview, parent=self,
+            )
+
+    def _center(self):
+        self.update_idletasks()
+        w = max(self.winfo_reqwidth(),  1100)
+        h = max(self.winfo_reqheight(), 600)
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
@@ -1635,6 +2096,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         row.pack(fill=tk.X)
 
         ttk.Button(row, text="Check Tracks",         command=self._check_tracks).pack(side=tk.LEFT)
+        ttk.Button(row, text="Refresh Tags",          command=self._refresh_tags).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(row, text="Normalize File Name",   command=self._normalize_filenames).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(row, text="Remove Lib Duplicates", command=self._remove_lib_duplicates).pack(side=tk.LEFT, padx=(8, 0))
 
@@ -1728,6 +2190,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self.tree.bind("<Shift-U>", lambda _: self._hotkey_update_track_in_lib())
         self.tree.bind("<Shift-e>", lambda _: self._hotkey_edit_tags())
         self.tree.bind("<Shift-E>", lambda _: self._hotkey_edit_tags())
+        self.tree.bind("<F5>", lambda _: self._refresh_tags())
         self.tree.bind("<Control-a>", lambda _: self.tree.selection_set(self.tree.get_children()))
         self._kb_sel = attach_keyboard_range_selection(self.tree)
 
@@ -1904,6 +2367,37 @@ class ScanTab(tk.Frame, AudioMenuMixin):
             f" ({folder_list}) — {total} file{'s' if total != 1 else ''} found."
         )
         self.footer_var.set(f"Scan complete — {total} file{'s' if total != 1 else ''} found.")
+
+    def _refresh_tags(self):
+        """Re-read tag fields (artist/title/album/bitrate) from disk for every row."""
+        items = self.tree.get_children()
+        if not items:
+            self.status_var.set("No tracks to refresh.")
+            return
+
+        total = len(items)
+        self.status_var.set(f"Refreshing tags… 0/{total}")
+        self.update_idletasks()
+
+        refreshed = 0
+        for i, item in enumerate(items):
+            vals      = list(self.tree.item(item, "values"))
+            full_path = vals[2]
+            ext = os.path.splitext(full_path)[1].lstrip(".").upper()
+            if ext not in AUDIO_EXTENSIONS:
+                continue
+            a, t, al, br = _read_audio_tags(full_path)
+            vals[4], vals[5], vals[6], vals[7] = a, t, al, br
+            self.tree.item(item, values=vals)
+            refreshed += 1
+
+            if (i + 1) % 25 == 0:
+                self.status_var.set(f"Refreshing tags… {i + 1}/{total}")
+                self.update_idletasks()
+
+        self.status_var.set(
+            f"Tag refresh complete — {refreshed} file{'s' if refreshed != 1 else ''} updated."
+        )
 
     def _check_tracks(self):
         """Refresh Lib Ready and In Lib columns for every row in the table.
@@ -2290,6 +2784,132 @@ class ScanTab(tk.Frame, AudioMenuMixin):
                 f"{n_ok} deleted, {len(errors)} failed:\n\n" + "\n".join(errors[:10]),
             )
 
+    def _ask_ai_restore_original_names(self, iids):
+        """Build an AI prompt that asks an LLM to restore artist/title/album to
+        their original-language script (e.g. Japanese / Chinese) and copy the
+        prompt to the clipboard.
+
+        Output the user receives in the clipboard is a single prompt string;
+        the LLM is instructed to reply with a JSON array only.
+        """
+        tracks = []
+        for iid in iids:
+            if not self.tree.exists(iid):
+                continue
+            vals   = self.tree.item(iid, "values")
+            artist = (vals[4] or "").strip()
+            title  = (vals[5] or "").strip()
+            album  = (vals[6] or "").strip()
+            if not (artist or title or album):
+                continue
+            tracks.append({"artist": artist, "title": title, "album": album})
+
+        if not tracks:
+            messagebox.showinfo(
+                "Ask AI",
+                "No artist/title/album metadata found in the selected tracks.",
+                parent=self,
+            )
+            return
+
+        source_json = json.dumps(tracks, ensure_ascii=False, indent=2)
+
+        prompt = (
+            "You are a music-metadata expert. The following tracks have "
+            "artist/title/album fields that may have been romanized, "
+            "transliterated, or translated away from the track's original "
+            "language (e.g. Japanese, Chinese, Korean, Cyrillic, etc.).\n\n"
+            "For each track, restore each field to the track's ORIGINAL "
+            "language and script when you are confident of the original. "
+            "If a field is already in its original script, or you are not "
+            "confident about the original, leave it unchanged.\n\n"
+            "Source tracks (JSON):\n"
+            f"{source_json}\n\n"
+            "Return ONLY a JSON array — no prose, no markdown fences. Each "
+            "element must have exactly this shape:\n"
+            "{\n"
+            '  "source":     {"artist": "...", "title": "...", "album": "..."},\n'
+            '  "normalized": {"artist": "...", "title": "...", "album": "..."}\n'
+            "}\n"
+            "Preserve the input order. Use empty strings for fields you "
+            "cannot confidently restore."
+        )
+
+        self.clipboard_clear()
+        self.clipboard_append(prompt)
+        # Force clipboard to persist after the app loses focus on Windows.
+        self.update()
+
+        n = len(tracks)
+        self.status_var.set(
+            f"🤖  AI prompt for {n} track{'s' if n != 1 else ''} copied to clipboard."
+        )
+
+    def _ask_ai_restore_titles_from_response(self, iids):
+        """Open a dialog that lets the user paste the AI's JSON response,
+        preview / edit the proposed new filenames, then rename matched files
+        on disk."""
+        rows = []
+        for iid in iids:
+            if not self.tree.exists(iid):
+                continue
+            vals = self.tree.item(iid, "values")
+            rows.append({
+                "iid":    iid,
+                "path":   vals[2],
+                "artist": (vals[4] or "").strip(),
+                "title":  (vals[5] or "").strip(),
+                "album":  (vals[6] or "").strip(),
+            })
+        if not rows:
+            messagebox.showinfo(
+                "Restore Titles",
+                "No scan rows are selected.",
+                parent=self,
+            )
+            return
+
+        _RestoreTitlesFromAIDialog(self.winfo_toplevel(), self, rows)
+
+    def _apply_restored_tags(
+        self, item_iid: str, artist: str, title: str, album: str,
+    ) -> tuple[bool, str]:
+        """Write artist/title/album tags to the FLAC file for ``item_iid``.
+
+        Returns (ok, message).  Updates the tree row's artist/title/album cells
+        so subsequent actions / displays reflect the new values.  Empty incoming
+        values are skipped (the existing tag is preserved).
+        """
+        if not self.tree.exists(item_iid):
+            return False, "Row no longer in the list."
+        vals      = list(self.tree.item(item_iid, "values"))
+        full_path = vals[2]
+        if not full_path.lower().endswith(".flac"):
+            return False, "Only FLAC files are supported."
+        if not os.path.isfile(full_path):
+            return False, "File not found on disk."
+
+        try:
+            audio = FLAC(full_path)
+            if artist:
+                audio["ARTIST"] = artist
+            if title:
+                audio["TITLE"]  = title
+            if album:
+                audio["ALBUM"]  = album
+            audio.save()
+        except Exception as exc:
+            return False, str(exc)
+
+        if artist:
+            vals[4] = artist
+        if title:
+            vals[5] = title
+        if album:
+            vals[6] = album
+        self.tree.item(item_iid, values=vals)
+        return True, "ok"
+
     def _paste_cover_art_to_selected(self):
         """Read an image from the clipboard and embed it into all selected FLAC files."""
         from PIL import ImageGrab, Image
@@ -2599,28 +3219,49 @@ class ScanTab(tk.Frame, AudioMenuMixin):
                     )
                     menu.add_separator()
 
-            # ── Compare track with Lib (single 🟡 or 🟢 rows) ── #
+            # ── Compare track with Lib (single row, regardless of Check Tracks status) ── #
             if len(selected) == 1 and self._on_compare is not None:
-                clicked_vals = self.tree.item(item, "values")
-                if clicked_vals[1] in ("🟡", "🟢"):
-                    menu.add_command(
-                        label="🔍  Compare track with Lib",
-                        command=lambda: self._open_compare(item),
-                    )
-                    menu.add_separator()
+                menu.add_command(
+                    label="🔍  Compare track with Lib",
+                    command=lambda: self._open_compare(item),
+                )
+                menu.add_separator()
 
-            # ── Update Track in Lib (single 🟡 or 🟢 rows) ── #
+            # ── Update Track(s) in Lib (🟡 or 🟢 rows) ── #
             # 🟡 = metadata match, different file bytes
             # 🟢 = matched in lib (still useful — e.g. cover art may differ)
-            if len(selected) == 1:
-                clicked_vals = self.tree.item(item, "values")
-                if clicked_vals[1] in ("🟡", "🟢"):
-                    menu.add_command(
-                        label="⬆  Update Track in Lib",
-                        accelerator="Shift+U",
-                        command=lambda: self._open_update_track_in_lib(item),
-                    )
-                    menu.add_separator()
+            updatable = [
+                i for i in selected
+                if self.tree.item(i, "values")[1] in ("🟡", "🟢")
+            ]
+            if updatable:
+                n_up = len(updatable)
+                label = (
+                    "⬆  Update Track in Lib"
+                    if n_up == 1
+                    else f"⬆  Update {n_up} Tracks in Lib"
+                )
+                menu.add_command(
+                    label=label,
+                    accelerator="Shift+U",
+                    command=lambda items=updatable: self._update_tracks_in_lib(items),
+                )
+                menu.add_separator()
+
+            # ── Ask AI submenu ── #
+            ai_menu = tk.Menu(menu, tearoff=0)
+            ai_menu.add_command(
+                label="Restore Original-Language Names…",
+                command=lambda iids=tuple(selected):
+                    self._ask_ai_restore_original_names(iids),
+            )
+            ai_menu.add_command(
+                label="Restore Tags from AI Response…",
+                command=lambda iids=tuple(selected):
+                    self._ask_ai_restore_titles_from_response(iids),
+            )
+            menu.add_cascade(label="🤖  Ask AI ▶", menu=ai_menu)
+            menu.add_separator()
 
             # ── Send to Lib submenu ── #
             lib_menu = tk.Menu(menu, tearoff=0)
@@ -2654,33 +3295,46 @@ class ScanTab(tk.Frame, AudioMenuMixin):
     def _open_compare(self, item):
         """Find the matching lib track and invoke the on_compare callback.
 
-        Lookup key: (artist, title, bitrate) — same as Check Tracks.
-        If multiple lib tracks match, prefer one whose album also matches; otherwise
-        fall back to the most-recently-updated row.
+        Lookup strategy:
+          1. Exact match on (artist, title, album).
+          2. Else first track with same (artist, title) and the highest bitrate.
+          3. Else show "No lib track found" listing the queries that were tried.
         """
-        from panels.database import find_track_by_artist_title_bitrate
+        from panels.database import (
+            find_track_by_artist_title_album,
+            find_track_by_artist_title,
+        )
         vals = self.tree.item(item, "values")
         src_path = vals[2]
         artist   = (vals[4] or "").strip()
         title    = (vals[5] or "").strip()
         album    = (vals[6] or "").strip()
-        bitrate  = (vals[7] or "").strip()
 
-        matches = find_track_by_artist_title_bitrate(artist, title, bitrate)
-        if not matches:
+        def _bitrate_num(s) -> int:
+            import re
+            m = re.search(r"\d+", str(s or ""))
+            return int(m.group(0)) if m else -1
+
+        row = None
+        tried: list[str] = []
+
+        tried.append(f"artist+title+album: artist={artist!r} title={title!r} album={album!r}")
+        exact = find_track_by_artist_title_album(artist, title, album) if (artist and title and album) else []
+        if exact:
+            row = exact[0]
+        else:
+            tried.append(f"artist+title (highest bitrate): artist={artist!r} title={title!r}")
+            at_matches = find_track_by_artist_title(artist, title) if (artist and title) else []
+            if at_matches:
+                row = max(at_matches, key=lambda r: _bitrate_num(r["bitrate"]))
+
+        if row is None:
             messagebox.showinfo(
                 "No lib track found",
                 "Could not find a matching track record in the library database.\n\n"
-                f"artist={artist!r}  title={title!r}  bitrate={bitrate!r}")
+                "Queries tried:\n  • " + "\n  • ".join(tried))
             return
 
-        # Prefer a match whose album is also the same (case-insensitive, trimmed).
-        album_norm = album.strip().lower()
-        row = next(
-            (r for r in matches
-             if (r["album"] or "").strip().lower() == album_norm),
-            matches[0],
-        )
         partition = row["partition"]
         rel_path  = row["rel_path"]
         lib_root  = self._settings.get("music_lib_paths", {}).get(partition, "")
@@ -2694,13 +3348,16 @@ class ScanTab(tk.Frame, AudioMenuMixin):
 
         self._on_compare(src_path, lib_path, partition, rel_path)
 
-    def _open_update_track_in_lib(self, item):
+    def _open_update_track_in_lib(self, item) -> bool:
         """Show the Update Track in Lib confirmation dialog for a single scan row.
 
         Lookup strategy (also used by the Shift+U hotkey):
           1. Try (artist, title, album) — most specific.
           2. Fall back to (artist, title) if step 1 finds nothing.
         Within either set, the most-recently-updated row wins.
+
+        Returns True if the lib track was successfully updated, False otherwise
+        (no match, user cancelled, or copy failed).
         """
         from panels.database import (
             find_track_by_artist_title_album,
@@ -2722,7 +3379,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
                 "No lib track found",
                 "Could not find a matching track record in the library database.\n\n"
                 f"artist={artist!r}  title={title!r}  album={album!r}")
-            return
+            return False
 
         row       = matches[0]
         partition = row["partition"]
@@ -2734,14 +3391,14 @@ class ScanTab(tk.Frame, AudioMenuMixin):
             messagebox.showwarning(
                 "Lib file not found",
                 f"DB record found but file is missing:\n{lib_path or '(path unknown)'}")
-            return
+            return False
 
         dlg = _UpdateTrackInLibDialog(
             self.winfo_toplevel(), src_path, lib_path, partition, rel_path)
         self.wait_window(dlg)
 
         if not dlg.confirmed:
-            return
+            return False
 
         log = get_logger("update_track_in_lib")
         try:
@@ -2754,9 +3411,11 @@ class ScanTab(tk.Frame, AudioMenuMixin):
             vals_list    = list(vals)
             vals_list[1] = "🟢"
             self.tree.item(item, values=vals_list)
+            return True
         except Exception as exc:
             log.error(f"Update lib track failed: {lib_path} — {exc}")
             messagebox.showerror("Update failed", str(exc))
+            return False
 
     def _hotkey_edit_tags(self):
         """Shift+E handler — opens Edit Tags for any FLAC files in the current selection."""
@@ -2768,15 +3427,42 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         if flac_paths:
             self._edit_tags(flac_paths)
 
+    def _update_tracks_in_lib(self, items):
+        """Run the Update Track in Lib flow for each given row sequentially.
+
+        Each item gets the existing per-track confirmation dialog (side-by-side
+        diff of bitrate + cover art).  If the user cancels a track, it is
+        skipped and the batch continues with the next track.  Rows whose status
+        isn't 🟡/🟢 are silently ignored.
+        """
+        items = [
+            i for i in items
+            if self.tree.exists(i)
+            and self.tree.item(i, "values")[1] in ("🟡", "🟢")
+        ]
+        if not items:
+            return
+
+        total = len(items)
+        updated = 0
+        for idx, item in enumerate(items, start=1):
+            if total > 1:
+                self.status_var.set(f"Update Track in Lib — {idx}/{total}…")
+                self.update_idletasks()
+            if self._open_update_track_in_lib(item):
+                updated += 1
+
+        if total > 1:
+            self.status_var.set(
+                f"✔  Update Track in Lib — {updated}/{total} track(s) updated."
+            )
+
     def _hotkey_update_track_in_lib(self):
-        """Shift+U handler — runs Update Track in Lib for a single 🟡/🟢 selection."""
+        """Shift+U handler — runs Update Track in Lib for the current 🟡/🟢 selection."""
         selected = self.tree.selection()
-        if len(selected) != 1:
+        if not selected:
             return
-        item = selected[0]
-        if self.tree.item(item, "values")[1] not in ("🟡", "🟢"):
-            return
-        self._open_update_track_in_lib(item)
+        self._update_tracks_in_lib(list(selected))
 
     def _open_send_to_lib(self, paths: list[str], partition: str):
         from panels.send_to_lib_panel import SendToLibPanel
