@@ -7,7 +7,7 @@ from tkinter import ttk, messagebox
 
 from mutagen.flac import FLAC
 
-from panels.settings_panel import load_settings, save_settings
+from music.settings_panel import load_settings, save_settings
 
 
 class LyricsPanel(tk.Toplevel):

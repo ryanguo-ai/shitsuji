@@ -19,7 +19,7 @@ import tkinter as tk
 import webbrowser
 from tkinter import messagebox, simpledialog, ttk
 
-from panels.database import (
+from music.database import (
     add_alias,
     delete_alias,
     delete_artist,
@@ -30,9 +30,9 @@ from panels.database import (
     update_artist,
     upsert_artist,
 )
-from panels.keyboard_selection import attach_keyboard_range_selection
-from panels.logger import get_logger
-from panels.musicbrainz_client import MusicBrainzError, parse_artist, search_artists
+from common.keyboard_selection import attach_keyboard_range_selection
+from common.logger import get_logger
+from music.musicbrainz_client import MusicBrainzError, parse_artist, search_artists
 
 _log = get_logger("artist_panel")
 

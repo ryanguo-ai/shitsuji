@@ -59,11 +59,11 @@ class AudioMenuMixin:
         subprocess.Popen([foobar, "/add", *paths])
 
     def _edit_tags(self, paths: list[str]):
-        from panels.edit_tags_panel import EditTagsPanel
+        from music.edit_tags_panel import EditTagsPanel
         EditTagsPanel(self.winfo_toplevel(), paths)
 
     def _find_cover_art(self, paths: list[str]):
-        from panels.cover_art_panel import CoverArtPanel
+        from music.cover_art_panel import CoverArtPanel
         CoverArtPanel(self.winfo_toplevel(), paths, self._settings)
 
     def _copy_paths(self, paths: list[str]):

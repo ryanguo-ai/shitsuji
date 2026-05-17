@@ -11,11 +11,11 @@ from datetime import datetime
 from mutagen.flac import FLAC
 from tkinterdnd2 import DND_FILES
 
-from panels.audio_details_panel import AudioDetailsPanel
-from panels.audio_menu import AUDIO_EXTENSIONS, AudioMenuMixin
-from panels.keyboard_selection import attach_keyboard_range_selection
-from panels.settings_panel import load_settings, save_settings, MUSIC_LIB_PARTITIONS
-from panels.logger import get_logger
+from music.audio_details_panel import AudioDetailsPanel
+from music.audio_menu import AUDIO_EXTENSIONS, AudioMenuMixin
+from common.keyboard_selection import attach_keyboard_range_selection
+from music.settings_panel import load_settings, save_settings, MUSIC_LIB_PARTITIONS
+from common.logger import get_logger
 
 
 class _ScanFileDetailsPanel(tk.Frame):
@@ -140,7 +140,7 @@ class _ScanFileDetailsPanel(tk.Frame):
 
     def show(self, local_path: str, lib_path: str) -> None:
         """Populate both columns. Pass an empty string to leave a side blank."""
-        from panels.compare_tracks_panel import _load_flac_info
+        from music.compare_tracks_panel import _load_flac_info
 
         # Commit any in-progress inline edit before reloading.
         if self._edit_entry is not None:
@@ -1811,7 +1811,7 @@ class _UpdateTrackInLibDialog(tk.Toplevel):
     # ------------------------------------------------------------------ #
 
     def _build(self):
-        from panels.compare_tracks_panel import _load_flac_info
+        from music.compare_tracks_panel import _load_flac_info
 
         src_info = _load_flac_info(self._src_path)
         lib_info = _load_flac_info(self._lib_path)
@@ -2412,7 +2412,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         byte-level differences the right-click "Compare track with Lib" / "Update
         Track in Lib" actions surface the underlying file diffs.
         """
-        from panels.database import get_track_info
+        from music.database import get_track_info
 
         items = self.tree.get_children()
         if not items:
@@ -2496,7 +2496,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         with an exact MD5 match qualify for deletion.  Shows a confirmation
         dialog before touching anything on disk.
         """
-        from panels.database import get_track_info, compute_file_md5
+        from music.database import get_track_info, compute_file_md5
 
         selected = self.tree.selection()
         items    = selected if selected else self.tree.get_children()
@@ -3300,7 +3300,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
           2. Else first track with same (artist, title) and the highest bitrate.
           3. Else show "No lib track found" listing the queries that were tried.
         """
-        from panels.database import (
+        from music.database import (
             find_track_by_artist_title_album,
             find_track_by_artist_title,
         )
@@ -3359,11 +3359,11 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         Returns True if the lib track was successfully updated, False otherwise
         (no match, user cancelled, or copy failed).
         """
-        from panels.database import (
+        from music.database import (
             find_track_by_artist_title_album,
             find_track_by_artist_title,
         )
-        from panels.lib_ops import copy_track_to_lib
+        from music.lib_ops import copy_track_to_lib
 
         vals     = self.tree.item(item, "values")
         src_path = vals[2]
@@ -3472,7 +3472,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self._update_tracks_in_lib(list(selected))
 
     def _open_send_to_lib(self, paths: list[str], partition: str):
-        from panels.send_to_lib_panel import SendToLibPanel
+        from music.send_to_lib_panel import SendToLibPanel
         lib_root = self._settings.get("music_lib_paths", {}).get(partition, "")
         SendToLibPanel(
             self.winfo_toplevel(),
@@ -3483,8 +3483,8 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         )
 
     def _send_to_lib(self, paths: list[str], partition: str):
-        from panels.send_to_lib_panel import compute_dest_full_path, compute_dest_rel_path
-        from panels.lib_ops import copy_track_to_lib
+        from music.send_to_lib_panel import compute_dest_full_path, compute_dest_rel_path
+        from music.lib_ops import copy_track_to_lib
 
         log = get_logger("send_to_lib")
         lib_root = self._settings.get("music_lib_paths", {}).get(partition, "")
@@ -3541,7 +3541,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         lib_path = ""
         if artist and title:
             try:
-                from panels.database import (
+                from music.database import (
                     find_track_by_artist_title_album,
                     find_track_by_artist_title,
                 )

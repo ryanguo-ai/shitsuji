@@ -16,8 +16,8 @@ from tkinter import ttk, messagebox
 
 from tkinterdnd2 import DND_FILES
 
-from panels.audio_menu import AUDIO_EXTENSIONS
-from panels.logger import get_logger
+from music.audio_menu import AUDIO_EXTENSIONS
+from common.logger import get_logger
 
 _log = get_logger("scan_folders")
 

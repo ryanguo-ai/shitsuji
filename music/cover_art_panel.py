@@ -11,7 +11,7 @@ from mutagen.flac import FLAC, Picture
 from PIL import Image, ImageTk
 
 from cover_art.musicbrainz_retriever import MusicBrainzCoverRetriever
-from panels.logger import get_logger
+from common.logger import get_logger
 
 
 class CoverArtPanel(tk.Toplevel):

@@ -8,8 +8,8 @@ to avoid duplicating file-copy + DB-upsert logic.
 import os
 import shutil
 
-from panels.database import compute_file_md5, upsert_track_info
-from panels.logger import get_logger
+from music.database import compute_file_md5, upsert_track_info
+from common.logger import get_logger
 
 
 def copy_track_to_lib(

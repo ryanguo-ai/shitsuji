@@ -6,14 +6,14 @@ import tkinter as tk
 from tkinter import ttk
 from tkinterdnd2 import TkinterDnD
 
-from panels.folder_scanner import ScanTab
-from panels.scan_folders_panel import ScanFoldersTab
-from panels.search_panel import SearchTab
-from panels.artist_panel import ArtistTab
-from panels.compare_tracks_panel import CompareTracksTab
-from panels.settings_panel import SettingsDialog, load_settings, save_settings
-from panels.database import init_db
-from panels.logger import get_logger
+from music.folder_scanner import ScanTab
+from music.scan_folders_panel import ScanFoldersTab
+from music.search_panel import SearchTab
+from music.artist_panel import ArtistTab
+from music.compare_tracks_panel import CompareTracksTab
+from music.settings_panel import SettingsDialog, load_settings, save_settings
+from music.database import init_db
+from common.logger import get_logger
 
 _log = get_logger("startup")
 

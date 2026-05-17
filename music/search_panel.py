@@ -9,15 +9,15 @@ from tkinter import ttk
 
 from mutagen.flac import FLAC
 
-from panels.audio_details_panel import AudioDetailsPanel
-from panels.audio_menu import AudioMenuMixin
-from panels.database import (
+from music.audio_details_panel import AudioDetailsPanel
+from music.audio_menu import AudioMenuMixin
+from music.database import (
     compute_file_md5, delete_track, delete_track_info,
     get_artist_name_variants, get_track_info, upsert_track_info, set_track_ranking,
 )
-from panels.keyboard_selection import attach_keyboard_range_selection
-from panels.logger import get_logger
-from panels.settings_panel import load_settings, save_settings
+from common.keyboard_selection import attach_keyboard_range_selection
+from common.logger import get_logger
+from music.settings_panel import load_settings, save_settings
 
 PAGE_SIZE = 100
 
@@ -634,7 +634,7 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         from PIL import ImageGrab, Image
         from mutagen.flac import FLAC, Picture
         import io as _io
-        from panels.folder_scanner import _PasteCoverArtDialog
+        from music.folder_scanner import _PasteCoverArtDialog
 
         try:
             img = ImageGrab.grabclipboard()

@@ -7,7 +7,7 @@ import pathlib
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from panels.database import DB_PATH
+from music.database import DB_PATH
 
 SETTINGS_PATH = pathlib.Path.home() / ".shitsuji" / "settings.json"
 

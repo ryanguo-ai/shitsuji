@@ -19,7 +19,7 @@ from tkinter import ttk
 
 from mutagen.flac import FLAC
 
-from panels.logger import get_logger
+from common.logger import get_logger
 
 # Characters illegal in Windows file/folder names
 _ILLEGAL = re.compile(r'[\\/:*?"<>|]')
@@ -126,7 +126,7 @@ def _check_lib_ready(path: str) -> bool:
 
 def _build_lib_index() -> tuple[set[str], set[tuple[str, str, str]]]:
     """Return (md5_set, aat_set) from track_info for In Lib matching."""
-    from panels.database import get_track_info
+    from music.database import get_track_info
     md5_set: set[str] = set()
     aat_set: set[tuple[str, str, str]] = set()
     for row in get_track_info():
@@ -144,7 +144,7 @@ def _inlib_status(path: str, artist: str, title: str, album: str,
                   md5_set: set[str],
                   aat_set: set[tuple[str, str, str]]) -> str:
     """Return 🟢 / 🟡 / ⬛ In Lib indicator for one file."""
-    from panels.database import compute_file_md5
+    from music.database import compute_file_md5
     try:
         md5 = compute_file_md5(path).lower()
     except Exception:

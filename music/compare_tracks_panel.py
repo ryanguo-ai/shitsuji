@@ -325,7 +325,7 @@ class CompareTracksTab(tk.Frame):
     def _update_lib_track(self):
         """Copy the scan track over the lib track and update the DB record."""
         from tkinter import messagebox
-        from panels.lib_ops import copy_track_to_lib
+        from music.lib_ops import copy_track_to_lib
 
         if not self._src_path or not self._partition or not self._rel_path:
             messagebox.showwarning("Nothing to update", "No lib track loaded.")

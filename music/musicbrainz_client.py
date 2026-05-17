@@ -13,7 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from panels.logger import get_logger
+from common.logger import get_logger
 
 _log = get_logger("musicbrainz")
 

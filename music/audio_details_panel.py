@@ -11,7 +11,7 @@ from tkinter import ttk, messagebox
 from mutagen.flac import FLAC
 from PIL import Image, ImageTk
 
-from panels.lyrics_panel import LyricsPanel
+from music.lyrics_panel import LyricsPanel
 
 # FLAC picture type IDs
 _PIC_FRONT = 3
