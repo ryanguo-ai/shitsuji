@@ -84,7 +84,7 @@ class AudioDetailsPanel(tk.Frame):
 
         self._tag_tree = ttk.Treeview(
             tag_frame, columns=("tag", "value"), show="headings",
-            selectmode="extended",
+            selectmode="none",
         )
         self._tag_tree.heading("tag", text="Tag", anchor=tk.W)
         self._tag_tree.heading("value", text="Value", anchor=tk.W)
@@ -95,13 +95,32 @@ class AudioDetailsPanel(tk.Frame):
             background="#fde8e8", foreground="#aaaaaa",
         )
 
+        # Cell-level selection: track the active (item, col_idx) and draw a
+        # highlight border on top of it using four thin frames so the cell
+        # text underneath stays visible. The Treeview itself has selectmode
+        # disabled so individual cells, not whole rows, appear selected.
+        self._active_cell: tuple[str, int] | None = None
+        self._cell_hl_frames = [
+            tk.Frame(self._tag_tree, bg="#2563eb", bd=0) for _ in range(4)
+        ]
+
+        def _on_yscroll(first, last):
+            tag_vsb.set(first, last)
+            self._redraw_cell_highlight()
+
         tag_vsb = ttk.Scrollbar(tag_frame, orient=tk.VERTICAL, command=self._tag_tree.yview)
-        self._tag_tree.configure(yscrollcommand=tag_vsb.set)
+        self._tag_tree.configure(yscrollcommand=_on_yscroll)
         tag_vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self._tag_tree.pack(fill=tk.BOTH, expand=True)
 
-        self._tag_tree.bind("<Double-1>", self._start_edit)
-        self._tag_tree.bind("<Delete>",   self._mark_deleted)
+        self._tag_tree.bind("<Button-1>",     self._on_cell_click)
+        self._tag_tree.bind("<Double-1>",     self._start_edit)
+        self._tag_tree.bind("<Delete>",       self._mark_deleted)
+        self._tag_tree.bind("<Control-c>",    self._copy_active_cell)
+        self._tag_tree.bind("<Control-C>",    self._copy_active_cell)
+        self._tag_tree.bind("<Control-v>",    self._paste_active_cell)
+        self._tag_tree.bind("<Control-V>",    self._paste_active_cell)
+        self._tag_tree.bind("<Configure>",    lambda _e: self._redraw_cell_highlight(), add=True)
 
         # Save / Copy / Add Tag buttons
         btn_frame = tk.Frame(self, bg="#f0f0f0")
@@ -123,6 +142,73 @@ class AudioDetailsPanel(tk.Frame):
     # ------------------------------------------------------------------ #
     # Inline editing                                                       #
     # ------------------------------------------------------------------ #
+
+    def _on_cell_click(self, event):
+        # Clear any row-level focus/selection that Tk may have applied so that
+        # only the cell-level highlight is visible.
+        try:
+            self._tag_tree.selection_remove(*self._tag_tree.selection())
+        except tk.TclError:
+            pass
+        self._tag_tree.focus("")
+
+        item = self._tag_tree.identify_row(event.y)
+        col  = self._tag_tree.identify_column(event.x)
+        if not item or col not in ("#1", "#2"):
+            self._active_cell = None
+            self._redraw_cell_highlight()
+            return "break"
+        col_idx = int(col[1:]) - 1
+        self._active_cell = (item, col_idx)
+        self._tag_tree.focus_set()
+        self._redraw_cell_highlight()
+        return "break"
+
+    def _redraw_cell_highlight(self):
+        if not self._active_cell:
+            for f in self._cell_hl_frames:
+                f.place_forget()
+            return
+        item, col_idx = self._active_cell
+        col = f"#{col_idx + 1}"
+        bbox = self._tag_tree.bbox(item, col)
+        if not bbox:
+            for f in self._cell_hl_frames:
+                f.place_forget()
+            return
+        x, y, w, h = bbox
+        t = 2
+        top, bottom, left, right = self._cell_hl_frames
+        top.place   (x=x,         y=y,         width=w, height=t)
+        bottom.place(x=x,         y=y + h - t, width=w, height=t)
+        left.place  (x=x,         y=y,         width=t, height=h)
+        right.place (x=x + w - t, y=y,         width=t, height=h)
+        for f in self._cell_hl_frames:
+            f.lift()
+
+    def _copy_active_cell(self, _event=None):
+        if not self._active_cell:
+            return "break"
+        item, col_idx = self._active_cell
+        text = str(self._tag_tree.item(item, "values")[col_idx])
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        return "break"
+
+    def _paste_active_cell(self, _event=None):
+        if not self._active_cell:
+            return "break"
+        item, col_idx = self._active_cell
+        try:
+            text = self.clipboard_get()
+        except tk.TclError:
+            return "break"
+        vals = list(self._tag_tree.item(item, "values"))
+        vals[col_idx] = text.strip()
+        self._tag_tree.item(item, values=vals)
+        self._mark_dirty()
+        self._redraw_cell_highlight()
+        return "break"
 
     def _start_edit(self, event):
         item = self._tag_tree.identify_row(event.y)
@@ -174,17 +260,19 @@ class AudioDetailsPanel(tk.Frame):
         entry.bind("<FocusOut>", commit)
 
     def _mark_deleted(self, _event=None):
-        """Mark selected tag rows for deletion (red/grey). Actual removal on Save."""
-        for item in self._tag_tree.selection():
-            if item in self._deleted_items:
-                # Toggle off — restore row
-                self._deleted_items.discard(item)
-                self._tag_tree.item(item, tags=())
-            else:
-                self._deleted_items.add(item)
-                self._tag_tree.item(item, tags=("deleted",))
+        """Mark the active cell's row for deletion (red/grey). Actual removal on Save."""
+        if not self._active_cell:
+            return
+        item = self._active_cell[0]
+        if item in self._deleted_items:
+            self._deleted_items.discard(item)
+            self._tag_tree.item(item, tags=())
+        else:
+            self._deleted_items.add(item)
+            self._tag_tree.item(item, tags=("deleted",))
         if self._deleted_items:
             self._mark_dirty()
+        self._redraw_cell_highlight()
 
     def _open_lyrics(self, item):
         lyrics = self._tag_tree.item(item, "values")[1]
@@ -201,10 +289,9 @@ class AudioDetailsPanel(tk.Frame):
         )
 
     def _copy_tags_json(self):
-        """Copy selected tag rows (or all if none selected) as JSON to clipboard."""
+        """Copy all (non-deleted) tag rows as JSON to clipboard."""
         import json
-        selected = self._tag_tree.selection()
-        items = selected if selected else self._tag_tree.get_children()
+        items = self._tag_tree.get_children()
         data = {
             self._tag_tree.item(iid, "values")[0]: self._tag_tree.item(iid, "values")[1]
             for iid in items
@@ -325,9 +412,12 @@ class AudioDetailsPanel(tk.Frame):
             # Remove the deleted rows from the tree now that save succeeded
             for iid in self._deleted_items:
                 self._tag_tree.delete(iid)
+            if self._active_cell and self._active_cell[0] in self._deleted_items:
+                self._active_cell = None
             self._deleted_items.clear()
             self._dirty = False
             self._save_btn.configure(state="disabled")
+            self._redraw_cell_highlight()
         except Exception as exc:
             messagebox.showerror("Save failed", str(exc))
 
@@ -408,6 +498,8 @@ class AudioDetailsPanel(tk.Frame):
         self._img_count_var.set("")
         self._img_dims_var.set("")
         self._tag_tree.delete(*self._tag_tree.get_children())
+        self._active_cell = None
+        self._redraw_cell_highlight()
 
     # ------------------------------------------------------------------ #
     # Cover art context menu                                               #

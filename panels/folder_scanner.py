@@ -2186,8 +2186,8 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self.tree.bind("<Double-1>", self._on_cell_double_click)
         self.tree.bind("<Delete>", self._on_delete_key)
         self.tree.bind("<Shift-Delete>", lambda _: self._delete_selected_files())
-        self.tree.bind("<Shift-u>", lambda _: self._hotkey_update_track_in_lib())
-        self.tree.bind("<Shift-U>", lambda _: self._hotkey_update_track_in_lib())
+        self.tree.bind("<Shift-u>", lambda _: self._hotkey_compare_track_in_lib())
+        self.tree.bind("<Shift-U>", lambda _: self._hotkey_compare_track_in_lib())
         self.tree.bind("<Shift-e>", lambda _: self._hotkey_edit_tags())
         self.tree.bind("<Shift-E>", lambda _: self._hotkey_edit_tags())
         self.tree.bind("<F5>", lambda _: self._refresh_tags())
@@ -3223,6 +3223,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
             if len(selected) == 1 and self._on_compare is not None:
                 menu.add_command(
                     label="🔍  Compare track with Lib",
+                    accelerator="Shift+U",
                     command=lambda: self._open_compare(item),
                 )
                 menu.add_separator()
@@ -3243,7 +3244,6 @@ class ScanTab(tk.Frame, AudioMenuMixin):
                 )
                 menu.add_command(
                     label=label,
-                    accelerator="Shift+U",
                     command=lambda items=updatable: self._update_tracks_in_lib(items),
                 )
                 menu.add_separator()
@@ -3351,7 +3351,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
     def _open_update_track_in_lib(self, item) -> bool:
         """Show the Update Track in Lib confirmation dialog for a single scan row.
 
-        Lookup strategy (also used by the Shift+U hotkey):
+        Lookup strategy (also used by the Update Track in Lib menu action):
           1. Try (artist, title, album) — most specific.
           2. Fall back to (artist, title) if step 1 finds nothing.
         Within either set, the most-recently-updated row wins.
@@ -3456,6 +3456,13 @@ class ScanTab(tk.Frame, AudioMenuMixin):
             self.status_var.set(
                 f"✔  Update Track in Lib — {updated}/{total} track(s) updated."
             )
+
+    def _hotkey_compare_track_in_lib(self):
+        """Shift+U handler — runs Compare track with Lib for the current selection."""
+        selected = self.tree.selection()
+        if len(selected) != 1 or self._on_compare is None:
+            return
+        self._open_compare(selected[0])
 
     def _hotkey_update_track_in_lib(self):
         """Shift+U handler — runs Update Track in Lib for the current 🟡/🟢 selection."""

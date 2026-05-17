@@ -243,6 +243,9 @@ class SearchTab(tk.Frame, AudioMenuMixin):
 
         ttk.Button(inp, text="Search", command=self._search).pack(side=tk.LEFT)
         ttk.Button(inp, text="Clear",  command=self._clear).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(
+            inp, text="🎲 Random song list", command=self._random_song_list,
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
         # Rating filter
         tk.Label(inp, text="Rating:", font=("Segoe UI", 9), bg="#f5f5f5").pack(
@@ -460,6 +463,44 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         self._album_var.set(album)
         self._rank_filter_var.set(_RANK_FILTER_LABELS[0])
         self._search()
+
+    def _random_song_list(self, n: int = 30) -> None:
+        """Load *n* random tracks from the library, refreshed on every click."""
+        import random
+
+        self._status_var.set("Picking random songs…")
+        self.update_idletasks()
+
+        lib_paths = self._settings.get("music_lib_paths", {})
+        all_rows = list(get_track_info())
+        sample = random.sample(all_rows, min(n, len(all_rows)))
+
+        self._results = []
+        for row in sample:
+            d = dict(row)
+            lib_root = lib_paths.get(d["partition"], "")
+            d["full_path"] = (
+                os.path.join(lib_root, d["partition"], d["rel_path"])
+                if lib_root else d["rel_path"]
+            )
+            d["ranking"] = int(row["ranking"] or 0)
+            self._results.append(d)
+
+        self._sort_col = None
+        self._sort_rev = False
+        self._reset_headings()
+        self._page = 0
+        self._detail_panel.clear()
+        self._show_page()
+
+        count = len(self._results)
+        self._status_var.set(
+            f"🎲 {count} random track{'s' if count != 1 else ''} "
+            f"(of {len(all_rows)} in lib)."
+        )
+        self._footer_var.set(
+            f"{count} random track{'s' if count != 1 else ''} loaded."
+        )
 
     # ------------------------------------------------------------------ #
     # Row selection → detail panel                                         #
