@@ -1,0 +1,7 @@
+mutagen
+Pillow
+tkinterdnd2
+librosa
+matplotlib
+numpy
+pandas

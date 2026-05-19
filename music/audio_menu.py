@@ -66,6 +66,10 @@ class AudioMenuMixin:
         from music.cover_art_panel import CoverArtPanel
         CoverArtPanel(self.winfo_toplevel(), paths, self._settings)
 
+    def _analyze_track(self, path: str):
+        from music.audio_analysis_panel import AudioAnalysisPanel
+        AudioAnalysisPanel(self.winfo_toplevel(), path)
+
     def _copy_paths(self, paths: list[str]):
         self.clipboard_clear()
         self.clipboard_append("\n".join(paths))
@@ -118,6 +122,26 @@ class AudioMenuMixin:
                 label="🎨  Find Cover Art",
                 command=lambda: self._find_cover_art(flac_paths),
             )
+
+        if audio_paths:
+            # "Analyze Track" only makes sense for a single file at a time —
+            # the analyzer renders one spectrogram + report per window.
+            if len(audio_paths) == 1:
+                menu.add_command(
+                    label="🔬  Analyze Track (Hi-Res check)",
+                    command=lambda p=audio_paths[0]: self._analyze_track(p),
+                )
+            else:
+                analyze_menu = tk.Menu(menu, tearoff=0)
+                for p in audio_paths:
+                    analyze_menu.add_command(
+                        label=os.path.basename(p),
+                        command=lambda pp=p: self._analyze_track(pp),
+                    )
+                menu.add_cascade(
+                    label="🔬  Analyze Track (Hi-Res check)",
+                    menu=analyze_menu,
+                )
 
         if audio_paths or flac_paths:
             menu.add_separator()
