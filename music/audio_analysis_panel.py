@@ -293,9 +293,11 @@ def quality_label(result: dict) -> str:
 class AudioAnalysisPanel(tk.Toplevel):
     """Spectrogram + Hi-Res verdict report for a single audio file."""
 
-    def __init__(self, parent: tk.Widget, audio_path: str):
+    def __init__(self, parent: tk.Widget, audio_path: str,
+                 on_complete=None):
         super().__init__(parent)
         self._path = audio_path
+        self._on_complete = on_complete  # callable(result_dict, label) or None
         self._log = get_logger("analyze")
 
         self.title(f"Analyze Track — {os.path.basename(audio_path)}")
@@ -456,6 +458,24 @@ class AudioAnalysisPanel(tk.Toplevel):
             self._path, verdict, result["confidence"],
             result["cutoff_hz"], result["sr"],
         )
+
+        # Persist to DB so subsequent scans / searches can show the
+        # quality without re-running analysis.  Right-click → Analyze
+        # always re-runs (we got here), so we overwrite any prior value.
+        label = quality_label(result)
+        if label and label != "?":
+            try:
+                from music.database import update_track_quality
+                update_track_quality(self._path, label)
+            except Exception:
+                self._log.exception("Failed to cache quality for %s", self._path)
+
+        if self._on_complete:
+            try:
+                self._on_complete(result, label)
+            except Exception:
+                self._log.exception("on_complete callback failed for %s",
+                                    self._path)
 
     def _draw_spectrogram(self, result: dict) -> None:
         fig = Figure(figsize=(7, 6), dpi=100)

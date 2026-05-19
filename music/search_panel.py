@@ -15,6 +15,7 @@ from music.audio_menu import AudioMenuMixin
 from music.database import (
     compute_file_md5, delete_track, delete_track_info,
     get_artist_name_variants, get_track_info, upsert_track_info, set_track_ranking,
+    update_track_info_quality,
 )
 from common.keyboard_selection import attach_keyboard_range_selection
 from common.logger import get_logger
@@ -650,6 +651,40 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         menu = self._build_audio_context_menu(paths, extra_items_fn=extra)
         menu.tk_popup(event.x_root, event.y_root)
 
+    def _analyze_track(self, path: str):
+        """Override AudioMenuMixin._analyze_track so right-click → Analyze
+        also persists the result to the curated ``track_info`` row and
+        updates the visible Quality column."""
+        from music.audio_analysis_panel import AudioAnalysisPanel
+
+        row = next(
+            (r for r in self._results if r.get("full_path") == path),
+            None,
+        )
+        partition = (row or {}).get("partition", "")
+        rel_path = (row or {}).get("rel_path", "")
+        iid = f"ti_{row['id']}" if row and row.get("id") is not None else None
+
+        def _on_complete(_result, label: str):
+            if not label or label == "error":
+                return
+            self._quality_cache[path] = label
+            if row is not None:
+                row["quality"] = label
+            if partition and rel_path:
+                try:
+                    update_track_info_quality(partition, rel_path, label)
+                except Exception:
+                    _log.exception("Failed to persist quality for %s / %s",
+                                   partition, rel_path)
+            if iid and self.tree.exists(iid):
+                try:
+                    self.tree.set(iid, "quality", label)
+                except tk.TclError:
+                    pass
+
+        AudioAnalysisPanel(self.winfo_toplevel(), path, on_complete=_on_complete)
+
     def _paste_cover_art_to_selected(self, flac_paths: list[str]) -> None:
         """Read an image from the clipboard, show a preview dialog, then embed on confirm."""
         from PIL import ImageGrab, Image
@@ -997,6 +1032,14 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         row = self._row_for_iid(iid)
         if row is not None:
             row["quality"] = label
+            partition = row.get("partition") or ""
+            rel_path = row.get("rel_path") or ""
+            if partition and rel_path and label and label != "error":
+                try:
+                    update_track_info_quality(partition, rel_path, label)
+                except Exception:
+                    _log.exception("Failed to persist quality for %s / %s",
+                                   partition, rel_path)
 
         # If the iid is currently shown, patch the visible cell in place.
         if self.tree.exists(iid):

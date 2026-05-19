@@ -129,6 +129,11 @@ def init_db() -> None:
             conn.execute("ALTER TABLE track_info ADD COLUMN bitrate TEXT")
         if "file_md5" not in cols:
             conn.execute("ALTER TABLE track_info ADD COLUMN file_md5 TEXT")
+        if "quality" not in cols:
+            conn.execute("ALTER TABLE track_info ADD COLUMN quality TEXT")
+        tcols = {r[1] for r in conn.execute("PRAGMA table_info(tracks)")}
+        if "quality" not in tcols:
+            conn.execute("ALTER TABLE tracks ADD COLUMN quality TEXT")
 
 @contextmanager
 def _connect():
@@ -251,6 +256,57 @@ def find_by_md5(file_md5: str) -> list[sqlite3.Row]:
             "SELECT * FROM track_info WHERE file_md5 = ? ORDER BY partition, rel_path",
             (file_md5,),
         ).fetchall()
+
+
+# ------------------------------------------------------------------ #
+# Quality (spectral Hi-Res / lossy classification)                     #
+# ------------------------------------------------------------------ #
+
+def update_track_info_quality(partition: str, rel_path: str, quality: str) -> None:
+    """Persist a spectral quality label for a curated track_info row."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE track_info SET quality = ? WHERE partition = ? AND rel_path = ?",
+            (quality, partition, rel_path),
+        )
+
+
+def update_track_quality(file_path: str, quality: str) -> None:
+    """Persist a spectral quality label for a scanned file path.
+
+    Upserts a minimal row in ``tracks`` keyed by ``file_path`` so the
+    Scan tab can cache analysis results even when no full track scan
+    has populated the row yet.
+    """
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO tracks (file_path, quality, scanned_at)
+            VALUES (?, ?, strftime('%Y-%m-%d %H:%M:%S', 'now'))
+            ON CONFLICT(file_path) DO UPDATE SET quality = excluded.quality
+            """,
+            (file_path, quality),
+        )
+
+
+def get_track_quality(file_path: str) -> str:
+    """Return the cached quality label for a scanned file, or '' if absent."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT quality FROM tracks WHERE file_path = ?",
+            (file_path,),
+        ).fetchone()
+        return (row["quality"] if row and row["quality"] else "") or ""
+
+
+def get_track_info_quality(partition: str, rel_path: str) -> str:
+    """Return the cached quality label for a track_info row, or ''."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT quality FROM track_info WHERE partition = ? AND rel_path = ?",
+            (partition, rel_path),
+        ).fetchone()
+        return (row["quality"] if row and row["quality"] else "") or ""
 
 
 def get_track_info(partition: str | None = None) -> list[sqlite3.Row]:

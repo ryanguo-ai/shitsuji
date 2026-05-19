@@ -4,6 +4,7 @@ Folder Scanner UI — browse and list all files in a selected directory.
 
 import json
 import os
+import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
@@ -2099,6 +2100,14 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         ttk.Button(row, text="Refresh Tags",          command=self._refresh_tags).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(row, text="Normalize File Name",   command=self._normalize_filenames).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(row, text="Remove Lib Duplicates", command=self._remove_lib_duplicates).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(row, text="🔬 Analyze spec",        command=self._analyze_selected_quality).pack(side=tk.LEFT, padx=(8, 0))
+
+        self._analyze_progress_var = tk.StringVar(value="")
+        tk.Label(
+            row, textvariable=self._analyze_progress_var,
+            font=("Segoe UI", 9, "italic"),
+            fg="#7f8c8d", bg="#f5f5f5",
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
         # ── Options row ───────────────────────────────────────────────── #
         opts = tk.Frame(self, bg="#f5f5f5", padx=16)
@@ -2137,7 +2146,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         tree_frame = tk.Frame(self._paned, bg="#f5f5f5")
         self._paned.add(tree_frame, stretch="always", minsize=400)
 
-        columns = ("flibready", "finlib", "fpath", "ftype", "fartist", "ftitle", "falbum", "fbitrate", "fsize", "fmodified")
+        columns = ("flibready", "finlib", "fpath", "ftype", "fartist", "ftitle", "falbum", "fbitrate", "fquality", "fsize", "fmodified")
         self.tree = ttk.Treeview(
             tree_frame, columns=columns, show="headings",
             selectmode="extended",
@@ -2152,6 +2161,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self.tree.heading("ftitle",     text="Title",      anchor=tk.W,      command=_cmd("ftitle"))
         self.tree.heading("falbum",     text="Album",      anchor=tk.W,      command=_cmd("falbum"))
         self.tree.heading("fbitrate",   text="Bitrate",    anchor=tk.E,      command=_cmd("fbitrate"))
+        self.tree.heading("fquality",   text="Quality",    anchor=tk.W,      command=_cmd("fquality"))
         self.tree.heading("fsize",      text="Size",       anchor=tk.E,      command=_cmd("fsize"))
         self.tree.heading("fmodified",  text="Modified",   anchor=tk.W,      command=_cmd("fmodified"))
 
@@ -2163,6 +2173,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self.tree.column("ftitle",     width=170, stretch=False)
         self.tree.column("falbum",     width=155, stretch=False)
         self.tree.column("fbitrate",   width=75,  anchor=tk.E, stretch=False)
+        self.tree.column("fquality",   width=120, anchor=tk.W, stretch=False)
         self.tree.column("fsize",      width=65,  anchor=tk.E, stretch=False)
         self.tree.column("fmodified",  width=125, stretch=False)
 
@@ -2228,9 +2239,78 @@ class ScanTab(tk.Frame, AudioMenuMixin):
     _COL_LABELS = {
         "flibready": "Lib Ready", "finlib": "In Lib", "fpath": "Full Path",
         "ftype": "Type", "fartist": "Artist", "ftitle": "Title",
-        "falbum": "Album", "fbitrate": "Bitrate", "fsize": "Size",
-        "fmodified": "Modified",
+        "falbum": "Album", "fbitrate": "Bitrate", "fquality": "Quality",
+        "fsize": "Size", "fmodified": "Modified",
     }
+
+    # ------------------------------------------------------------------ #
+    # Quality analysis (🔬 Analyze spec)                                   #
+    # ------------------------------------------------------------------ #
+
+    def _analyze_selected_quality(self):
+        """Run spectral Hi-Res / lossy analysis on the selected tracks.
+
+        Runs sequentially on a background thread so the Tk loop stays
+        responsive.  Results land in the new ``Quality`` column.
+        """
+        if getattr(self, "_analyze_thread", None) and self._analyze_thread.is_alive():
+            return
+
+        targets: list[tuple[str, str]] = []   # (iid, full_path)
+        for iid in self.tree.selection():
+            full_path = self.tree.set(iid, "fpath")
+            if not full_path or not os.path.isfile(full_path):
+                continue
+            ext = os.path.splitext(full_path)[1].lstrip(".").upper()
+            if ext in AUDIO_EXTENSIONS:
+                targets.append((iid, full_path))
+
+        if not targets:
+            self.status_var.set("Select one or more audio tracks to analyze.")
+            return
+
+        self._analyze_progress_var.set(f"Analyzing 0 / {len(targets)}…")
+        self._analyze_thread = threading.Thread(
+            target=self._analyze_worker, args=(targets,), daemon=True,
+        )
+        self._analyze_thread.start()
+
+    def _analyze_worker(self, targets: list[tuple[str, str]]):
+        from music.audio_analysis_panel import analyze_audio, quality_label
+
+        log = get_logger("scan")
+        total = len(targets)
+        for idx, (iid, path) in enumerate(targets, start=1):
+            try:
+                result = analyze_audio(path)
+                label = quality_label(result)
+                log.info(
+                    "Quality: %s → %s (cutoff=%.0f Hz, sr=%d)",
+                    path, label, result["cutoff_hz"], result["sr"],
+                )
+            except Exception:  # noqa: BLE001
+                log.exception("Quality analysis failed for %s", path)
+                label = "error"
+            self.after(0, self._on_quality_ready, iid, label, idx, total)
+
+        self.after(0, lambda: self._analyze_progress_var.set(""))
+
+    def _on_quality_ready(self, iid: str, label: str, idx: int, total: int):
+        if self.tree.exists(iid):
+            try:
+                self.tree.set(iid, "fquality", label)
+            except tk.TclError:
+                pass
+            if label and label != "error":
+                try:
+                    full_path = self.tree.set(iid, "fpath")
+                    from music.database import update_track_quality
+                    if full_path:
+                        update_track_quality(full_path, label)
+                except Exception:
+                    get_logger("scan").exception(
+                        "Failed to persist quality for iid=%s", iid)
+        self._analyze_progress_var.set(f"Analyzing {idx} / {total}…")
 
     @staticmethod
     def _parse_size(val: str) -> float:
@@ -2704,10 +2784,18 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         file_type = ext if ext else "File"
         artist, title, album, bitrate = _read_flac_tags(full_path) if ext == "FLAC" else ("", "", "", "")
 
+        # Look up cached quality (from a prior Analyze spec run) so users
+        # don't have to re-analyze the same files every scan.
+        try:
+            from music.database import get_track_quality
+            quality = get_track_quality(full_path)
+        except Exception:
+            quality = ""
+
         tag = "odd" if len(self.tree.get_children()) % 2 == 0 else "even"
         self.tree.insert(
             "", "end",
-            values=("", "", full_path, file_type, artist, title, album, bitrate, size, modified),
+            values=("", "", full_path, file_type, artist, title, album, bitrate, quality, size, modified),
             tags=(tag,),
         )
 
@@ -3291,6 +3379,30 @@ class ScanTab(tk.Frame, AudioMenuMixin):
 
         menu = self._build_audio_context_menu(paths, extra_items_fn=extra)
         menu.tk_popup(event.x_root, event.y_root)
+
+    def _analyze_track(self, path: str):
+        """Override AudioMenuMixin._analyze_track to also refresh the visible
+        Quality cell once the AudioAnalysisPanel finishes (the panel itself
+        already persists to ``tracks.quality`` by file path)."""
+        from music.audio_analysis_panel import AudioAnalysisPanel
+
+        # Find the row whose fpath column matches *path*.
+        target_iid = next(
+            (iid for iid in self.tree.get_children()
+             if self.tree.set(iid, "fpath") == path),
+            None,
+        )
+
+        def _on_complete(_result, label: str):
+            if not label or label == "error":
+                return
+            if target_iid and self.tree.exists(target_iid):
+                try:
+                    self.tree.set(target_iid, "fquality", label)
+                except tk.TclError:
+                    pass
+
+        AudioAnalysisPanel(self.winfo_toplevel(), path, on_complete=_on_complete)
 
     def _open_compare(self, item):
         """Find the matching lib track and invoke the on_compare callback.
