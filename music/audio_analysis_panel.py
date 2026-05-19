@@ -251,6 +251,42 @@ def _classify(sr: int, cutoff_hz: float, bands_df: pd.DataFrame,
 
 
 # --------------------------------------------------------------------------- #
+# Compact label for tables                                                     #
+# --------------------------------------------------------------------------- #
+
+def quality_label(result: dict) -> str:
+    """Map a full analysis result to a short label suitable for a table column.
+
+    Returns values like ``"Hi-Res"``, ``"CD"``, ``"MP3 ~128"``, ``"MP3 ~192"``,
+    ``"MP3 ~256"``, ``"Upscaled (MP3 ~128)"``, ``"Upscaled"``, ``"Hi-Res?"``.
+    """
+    verdict = result.get("verdict", "")
+    cutoff = float(result.get("cutoff_hz", 0))
+    sr = int(result.get("sr", 0))
+
+    def _mp3_tier(c: float) -> str:
+        if c < 16_500:
+            return "MP3 ~128"
+        if c < 19_000:
+            return "MP3 ~192"
+        if c < 20_500:
+            return "MP3 ~256"
+        return "MP3 ~320"
+
+    if verdict == "GENUINE HI-RES":
+        return "Hi-Res"
+    if verdict == "STANDARD RESOLUTION":
+        return "CD"
+    if verdict == "LIKELY LOSSY (MP3-like)":
+        return _mp3_tier(cutoff)
+    if verdict == "UPSCALED (fake Hi-Res)":
+        return f"Upscaled ({_mp3_tier(cutoff)})"
+    if verdict.startswith("INCONCLUSIVE"):
+        return "Hi-Res?" if sr > 48_000 else "?"
+    return "?"
+
+
+# --------------------------------------------------------------------------- #
 # Tk UI                                                                        #
 # --------------------------------------------------------------------------- #
 

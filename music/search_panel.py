@@ -4,6 +4,7 @@ Search In Lib tab — fuzzy search across the music library inventory.
 
 import difflib
 import os
+import threading
 import tkinter as tk
 from tkinter import ttk
 
@@ -189,6 +190,7 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         ("title",     "Title",      180,  tk.W,      False),
         ("album",     "Album",      155,  tk.W,      False),
         ("bitrate",   "Bitrate",     70,  tk.E,      False),
+        ("quality",   "Quality",    120,  tk.W,      False),
         ("updated",   "Updated",    130,  tk.W,      False),
     ]
 
@@ -202,6 +204,10 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         self._page: int = 0         # current page index (0-based)
         self._selected_partition: str | None = None
         self._selected_rel_path:  str | None = None
+        # Cached quality labels keyed by absolute file path so they persist
+        # across pagination / re-sort / refresh of the result table.
+        self._quality_cache: dict[str, str] = {}
+        self._analyze_thread: threading.Thread | None = None
         self._build_ui()
 
     # ------------------------------------------------------------------ #
@@ -334,6 +340,21 @@ class SearchTab(tk.Frame, AudioMenuMixin):
 
         self._btn_next = ttk.Button(pag, text="Next  ▶", command=self._next_page, width=9)
         self._btn_next.pack(side=tk.LEFT)
+
+        # Quality analyzer: runs librosa-based spectral analysis on the
+        # currently-selected tracks and fills the Quality column.
+        self._btn_analyze = ttk.Button(
+            pag, text="🔬 Analyze spec",
+            command=self._analyze_selected_quality,
+        )
+        self._btn_analyze.pack(side=tk.LEFT, padx=(12, 0))
+
+        self._analyze_progress_var = tk.StringVar(value="")
+        tk.Label(
+            pag, textvariable=self._analyze_progress_var,
+            font=("Segoe UI", 9, "italic"),
+            fg="#7f8c8d", bg="#f5f5f5",
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
         self._update_pagination_controls()
 
@@ -909,6 +930,106 @@ class SearchTab(tk.Frame, AudioMenuMixin):
     def _total_pages(self) -> int:
         return max(1, -(-len(self._results) // PAGE_SIZE))   # ceiling division
 
+    # ------------------------------------------------------------------ #
+    # Quality analysis (Analyze spec)                                      #
+    # ------------------------------------------------------------------ #
+
+    def _analyze_selected_quality(self):
+        """Run spectral analysis on the currently-selected rows.
+
+        Selected files are processed sequentially on a background thread —
+        librosa loads are CPU- and disk-heavy, so we never hold the Tk loop.
+        Each completed file updates the Quality column for its row.
+        """
+        if self._analyze_thread and self._analyze_thread.is_alive():
+            return
+
+        sel_iids = list(self.tree.selection())
+        if not sel_iids:
+            self._footer_var.set("Select one or more tracks first.")
+            return
+
+        targets: list[tuple[str, str]] = []   # (iid, full_path)
+        for iid in sel_iids:
+            row = self._row_for_iid(iid)
+            full_path = (row or {}).get("full_path") or ""
+            if full_path and os.path.isfile(full_path):
+                targets.append((iid, full_path))
+
+        if not targets:
+            self._footer_var.set("No analysable files in selection.")
+            return
+
+        self._btn_analyze.state(["disabled"])
+        self._analyze_progress_var.set(f"0 / {len(targets)}")
+        self._footer_var.set(f"Analyzing {len(targets)} track(s)…")
+
+        self._analyze_thread = threading.Thread(
+            target=self._analyze_worker, args=(targets,), daemon=True,
+        )
+        self._analyze_thread.start()
+
+    def _analyze_worker(self, targets: list[tuple[str, str]]):
+        from music.audio_analysis_panel import analyze_audio, quality_label
+
+        total = len(targets)
+        for idx, (iid, path) in enumerate(targets, start=1):
+            try:
+                result = analyze_audio(path)
+                label = quality_label(result)
+                _log.info(
+                    "Quality: %s → %s (cutoff=%.0f Hz, sr=%d)",
+                    path, label, result["cutoff_hz"], result["sr"],
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.exception("Quality analysis failed for %s", path)
+                label = "error"
+            self.after(0, self._on_quality_ready, iid, path, label, idx, total)
+
+        self.after(0, self._on_analyze_done)
+
+    def _on_quality_ready(self, iid: str, full_path: str, label: str,
+                          idx: int, total: int):
+        self._quality_cache[full_path] = label
+
+        # Mirror onto the result dict so column sorting + re-pagination
+        # both see the new value without re-running analysis.
+        row = self._row_for_iid(iid)
+        if row is not None:
+            row["quality"] = label
+
+        # If the iid is currently shown, patch the visible cell in place.
+        if self.tree.exists(iid):
+            try:
+                self.tree.set(iid, "quality", label)
+            except tk.TclError:
+                pass
+
+        self._analyze_progress_var.set(f"{idx} / {total}")
+
+    def _on_analyze_done(self):
+        self._btn_analyze.state(["!disabled"])
+        self._footer_var.set("Analysis complete.")
+        # Briefly leave the progress counter visible, then clear it.
+        self.after(2500, lambda: self._analyze_progress_var.set(""))
+
+    def _row_for_iid(self, iid: str) -> dict | None:
+        """Look up the result-set dict backing a Treeview row."""
+        if not iid.startswith("ti_"):
+            return None
+        try:
+            ti_id = int(iid.split("_", 1)[1])
+        except ValueError:
+            return None
+        for row in self._results:
+            if row.get("id") == ti_id:
+                return row
+        return None
+
+    # ------------------------------------------------------------------ #
+    # Pagination                                                           #
+    # ------------------------------------------------------------------ #
+
     def _prev_page(self):
         if self._page > 0:
             self._page -= 1
@@ -936,6 +1057,8 @@ class SearchTab(tk.Frame, AudioMenuMixin):
                     row.get("title",      "") or "",
                     row.get("album",      "") or "",
                     row.get("bitrate",    "") or "",
+                    self._quality_cache.get(row.get("full_path", ""), "")
+                        or row.get("quality", "") or "",
                     row.get("updated_at", "") or "",
                 ),
                 tags=("odd" if i % 2 == 0 else "even",),
@@ -968,6 +1091,7 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         "partition": "partition", "rel_path": "full_path",
         "artist": "artist",       "title":    "title",
         "album":  "album",        "bitrate":  "bitrate",
+        "quality": "quality",
         "updated": "updated_at",
     }
 
