@@ -2100,14 +2100,6 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         ttk.Button(row, text="Refresh Tags",          command=self._refresh_tags).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(row, text="Normalize File Name",   command=self._normalize_filenames).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(row, text="Remove Lib Duplicates", command=self._remove_lib_duplicates).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(row, text="🔬 Analyze spec",        command=self._analyze_selected_quality).pack(side=tk.LEFT, padx=(8, 0))
-
-        self._analyze_progress_var = tk.StringVar(value="")
-        tk.Label(
-            row, textvariable=self._analyze_progress_var,
-            font=("Segoe UI", 9, "italic"),
-            fg="#7f8c8d", bg="#f5f5f5",
-        ).pack(side=tk.LEFT, padx=(6, 0))
 
         # ── Options row ───────────────────────────────────────────────── #
         opts = tk.Frame(self, bg="#f5f5f5", padx=16)
@@ -2184,6 +2176,25 @@ class ScanTab(tk.Frame, AudioMenuMixin):
 
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         hsb.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Bottom action row inside the left pane — matches the Search In
+        # Lib panel's pagination row layout so the Analyze button sits in
+        # the same visual position across tabs.
+        action_row = tk.Frame(tree_frame, bg="#f5f5f5", pady=4)
+        action_row.pack(side=tk.BOTTOM, fill=tk.X)
+
+        ttk.Button(
+            action_row, text="🔬 Analyze spec",
+            command=self._analyze_selected_quality,
+        ).pack(side=tk.LEFT)
+
+        self._analyze_progress_var = tk.StringVar(value="")
+        tk.Label(
+            action_row, textvariable=self._analyze_progress_var,
+            font=("Segoe UI", 9, "italic"),
+            fg="#7f8c8d", bg="#f5f5f5",
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
         self.tree.pack(fill=tk.BOTH, expand=True)
 
         self.tree.tag_configure("odd",         background="#ffffff")

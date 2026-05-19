@@ -253,6 +253,9 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         ttk.Button(
             inp, text="🎲 Random song list", command=self._random_song_list,
         ).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(
+            inp, text="🧬 Find Duplicates", command=self._find_duplicates,
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
         # Rating filter
         tk.Label(inp, text="Rating:", font=("Segoe UI", 9), bg="#f5f5f5").pack(
@@ -522,6 +525,68 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         )
         self._footer_var.set(
             f"{count} random track{'s' if count != 1 else ''} loaded."
+        )
+
+    def _find_duplicates(self) -> None:
+        """Find tracks sharing the same (artist, title) and group them together.
+
+        Each duplicate group is shown contiguously in the result list; groups
+        are ordered by artist/title so related rows stay adjacent. Uses the
+        same pagination as a normal search.
+        """
+        self._status_var.set("Scanning library for duplicates…")
+        self.update_idletasks()
+
+        lib_paths = self._settings.get("music_lib_paths", {})
+
+        groups: dict[tuple[str, str], list[dict]] = {}
+        for row in get_track_info():
+            artist = (row["artist"] or "").strip()
+            title  = (row["title"]  or "").strip()
+            if not artist or not title:
+                continue
+            key = (artist.lower(), title.lower())
+            d = dict(row)
+            lib_root = lib_paths.get(d["partition"], "")
+            d["full_path"] = (
+                os.path.join(lib_root, d["partition"], d["rel_path"])
+                if lib_root else d["rel_path"]
+            )
+            d["ranking"] = int(row["ranking"] or 0)
+            groups.setdefault(key, []).append(d)
+
+        dup_groups = [g for g in groups.values() if len(g) >= 2]
+        dup_groups.sort(key=lambda g: (
+            (g[0].get("artist") or "").lower(),
+            (g[0].get("title")  or "").lower(),
+        ))
+
+        self._results = []
+        for g in dup_groups:
+            g.sort(key=lambda r: (
+                (r.get("album")     or "").lower(),
+                (r.get("partition") or "").lower(),
+                (r.get("rel_path")  or "").lower(),
+            ))
+            self._results.extend(g)
+
+        self._sort_col = None
+        self._sort_rev = False
+        self._reset_headings()
+        self._page = 0
+        self._detail_panel.clear()
+        self._show_page()
+
+        n_groups = len(dup_groups)
+        n_tracks = len(self._results)
+        self._status_var.set(
+            f"🧬 {n_groups} duplicate group{'s' if n_groups != 1 else ''} "
+            f"({n_tracks} track{'s' if n_tracks != 1 else ''}) — "
+            f"grouped by Artist + Title."
+        )
+        self._footer_var.set(
+            f"{n_tracks} duplicate track{'s' if n_tracks != 1 else ''} "
+            f"in {n_groups} group{'s' if n_groups != 1 else ''}."
         )
 
     # ------------------------------------------------------------------ #
