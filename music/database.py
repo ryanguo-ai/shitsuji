@@ -678,3 +678,45 @@ def get_artist_name_variants(query: str) -> set[str]:
         if row["sort_name"]: variants.add(row["sort_name"])
         if row["alias"]:     variants.add(row["alias"])
     return variants
+
+
+def find_artist_by_name_or_alias(name: str) -> sqlite3.Row | None:
+    """Look up an ``artist_info`` row by exact name (case-insensitive) on
+    either ``artist_info.name``, ``artist_info.sort_name`` or any
+    ``artist_alias.alias``.
+
+    Returns the first matching row or ``None`` when nothing matches.
+    Used to resolve an alias back to its canonical/main artist name.
+
+    Match priority:
+        1. ``artist_info.name``  – the canonical/main name
+        2. ``artist_alias.alias``
+        3. ``artist_info.sort_name``
+
+    This ensures that when a query string is itself the main name of some
+    artist, that artist is returned, rather than (e.g.) a different artist
+    that happens to have it as an alias.
+    """
+    if not name or not name.strip():
+        return None
+    needle = name.strip()
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT ai.*,
+                   CASE
+                       WHEN ai.name      = ? COLLATE NOCASE THEN 1
+                       WHEN aa.alias     = ? COLLATE NOCASE THEN 2
+                       WHEN ai.sort_name = ? COLLATE NOCASE THEN 3
+                   END AS match_rank
+              FROM artist_info ai
+              LEFT JOIN artist_alias aa ON aa.artist_id = ai.id
+             WHERE ai.name      = ? COLLATE NOCASE
+                OR ai.sort_name = ? COLLATE NOCASE
+                OR aa.alias     = ? COLLATE NOCASE
+             ORDER BY match_rank
+             LIMIT 1
+            """,
+            (needle, needle, needle, needle, needle, needle),
+        ).fetchone()
+    return row

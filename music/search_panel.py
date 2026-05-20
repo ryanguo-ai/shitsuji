@@ -14,6 +14,7 @@ from music.audio_details_panel import AudioDetailsPanel
 from music.audio_menu import AudioMenuMixin
 from music.database import (
     compute_file_md5, delete_track, delete_track_info,
+    find_artist_by_name_or_alias,
     get_artist_name_variants, get_track_info, upsert_track_info, set_track_ranking,
     update_track_info_quality,
 )
@@ -201,6 +202,172 @@ class _DeleteLibTracksDialog(tk.Toplevel):
         self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
 
+class _UseMainArtistDialog(tk.Toplevel):
+    """Preview/confirm dialog for the *Use Main Artist Name* action.
+
+    ``items`` is a list of dicts, one per selected track, with keys:
+        track   : dict  – the result row (title/album/artist/full_path/…)
+        current : str   – the track's current artist tag
+        main    : str | None – the canonical name from artist_info, or None
+        status  : str   – one of "rename", "unchanged", "missing"
+    """
+
+    def __init__(self, parent, items: list[dict],
+                 on_search_artist=None):
+        super().__init__(parent)
+        self._items            = items
+        self._on_search_artist = on_search_artist
+        self.confirmed         = False
+        self.title("Use Main Artist Name — Confirm")
+        self.configure(bg="#f5f5f5")
+        self.grab_set()
+        self.minsize(880, 380)
+        self.resizable(True, True)
+        self._build()
+        self._center()
+
+    def _build(self):
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)
+
+        # Header
+        hdr = tk.Frame(self, bg="#1f618d", pady=8, padx=12)
+        hdr.grid(row=0, column=0, sticky="ew")
+        tk.Label(
+            hdr, text="🎤  Use Main Artist Name",
+            font=("Segoe UI", 12, "bold"), fg="white", bg="#1f618d",
+        ).pack(side=tk.LEFT)
+
+        n_rename    = sum(1 for it in self._items if it["status"] == "rename")
+        n_unchanged = sum(1 for it in self._items if it["status"] == "unchanged")
+        n_missing   = sum(1 for it in self._items if it["status"] == "missing")
+
+        summ = tk.Frame(self, bg="#eaf2fb", padx=12, pady=6)
+        summ.grid(row=1, column=0, sticky="ew")
+        tk.Label(
+            summ,
+            text=(
+                f"{n_rename} track{'s' if n_rename != 1 else ''} will have the "
+                f"artist tag rewritten. {n_unchanged} already use the main name. "
+                f"{n_missing} have no matching Artist Info entry "
+                f"(highlighted below)."
+            ),
+            font=("Segoe UI", 9), fg="#1a5276", bg="#eaf2fb",
+            wraplength=820, justify="left",
+        ).pack(anchor="w")
+
+        # Per-track table
+        tbl_frame = tk.Frame(self, bg="#f5f5f5")
+        tbl_frame.grid(row=2, column=0, sticky="nsew", padx=12, pady=(8, 4))
+        tbl_frame.columnconfigure(0, weight=1)
+        tbl_frame.rowconfigure(0, weight=1)
+
+        cols = ("title", "album", "current", "main", "status")
+        tree = ttk.Treeview(tbl_frame, columns=cols, show="headings",
+                            selectmode="extended")
+        for cid, lbl, w, anc, stretch in (
+            ("title",   "Title",          200, tk.W, True),
+            ("album",   "Album",          160, tk.W, True),
+            ("current", "Current Artist", 170, tk.W, True),
+            ("main",    "New Artist",     170, tk.W, True),
+            ("status",  "Status",         130, tk.W, False),
+        ):
+            tree.heading(cid, text=lbl, anchor=anc)
+            tree.column(cid, width=w, anchor=anc, stretch=stretch)
+
+        tree.tag_configure("rename",    background="#eafaf1")
+        tree.tag_configure("unchanged", background="#f4f6f7", foreground="#7f8c8d")
+        tree.tag_configure("missing",   background="#fdecea", foreground="#922b21")
+
+        for idx, it in enumerate(self._items):
+            status_lbl = {
+                "rename":    "Will rename",
+                "unchanged": "Already main",
+                "missing":   "Artist Info not found",
+            }[it["status"]]
+            track = it["track"]
+            tree.insert(
+                "", "end", iid=str(idx), tags=(it["status"],),
+                values=(
+                    track.get("title", "") or "",
+                    track.get("album", "") or "",
+                    it["current"],
+                    it["main"] or "—",
+                    status_lbl,
+                ),
+            )
+
+        vsb = ttk.Scrollbar(tbl_frame, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        self._tree = tree
+        tree.bind("<Double-1>", lambda _e: self._search_selected_missing())
+
+        # Buttons
+        btn_frame = tk.Frame(self, bg="#f5f5f5", pady=8, padx=12)
+        btn_frame.grid(row=3, column=0, sticky="ew")
+
+        search_btn = ttk.Button(
+            btn_frame, text="🔍 Search Selected in Artist Info",
+            command=self._search_selected_missing,
+        )
+        search_btn.pack(side=tk.LEFT)
+        if self._on_search_artist is None or n_missing == 0:
+            search_btn.state(["disabled"])
+
+        cancel_btn = ttk.Button(btn_frame, text="Cancel", command=self.destroy)
+        cancel_btn.pack(side=tk.RIGHT, padx=(4, 0))
+        apply_btn = ttk.Button(
+            btn_frame, text=f"✓ Apply {n_rename} Rename{'s' if n_rename != 1 else ''}",
+            command=self._confirm,
+        )
+        apply_btn.pack(side=tk.RIGHT)
+        if n_rename == 0:
+            apply_btn.state(["disabled"])
+
+        def _focus_cancel(_e=None):
+            cancel_btn.focus_set(); return "break"
+
+        def _focus_apply(_e=None):
+            apply_btn.focus_set(); return "break"
+
+        for btn in (apply_btn, cancel_btn):
+            btn.bind("<Right>", _focus_cancel)
+            btn.bind("<Left>",  _focus_apply)
+            btn.bind("<Return>", lambda _e, b=btn: b.invoke())
+
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.after(0, (apply_btn if n_rename else cancel_btn).focus_set)
+
+    def _search_selected_missing(self):
+        if self._on_search_artist is None:
+            return
+        seen: set[str] = set()
+        for iid in self._tree.selection():
+            it = self._items[int(iid)]
+            if it["status"] != "missing":
+                continue
+            key = it["current"].casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            self._on_search_artist(it["current"])
+            return  # only search the first missing artist to avoid spamming
+
+    def _confirm(self):
+        self.confirmed = True
+        self.destroy()
+
+    def _center(self):
+        self.update_idletasks()
+        w  = max(self.winfo_reqwidth(),  800)
+        h  = max(self.winfo_reqheight(), 380)
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
+
 class SearchTab(tk.Frame, AudioMenuMixin):
 
     # (col_id, heading_label, width, anchor, stretch)
@@ -276,6 +443,12 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         ).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(
             inp, text="🧬 Find Duplicates", command=self._find_duplicates,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(
+            inp, text="✂ Trim Spaces", command=self._trim_spaces,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(
+            inp, text="🎤 Use Main Artist Name", command=self._use_main_artist_name,
         ).pack(side=tk.LEFT, padx=(6, 0))
 
         # Rating filter
@@ -1129,6 +1302,246 @@ class SearchTab(tk.Frame, AudioMenuMixin):
                     partition, full_path, artist, title, album, bitrate, updated,
                 ))
                 break
+
+    # ------------------------------------------------------------------ #
+    # Trim whitespace in artist/title/album                                #
+    # ------------------------------------------------------------------ #
+
+    def _trim_spaces(self):
+        """Strip leading/trailing whitespace from artist/title/album for the
+        selected rows (or all current results if nothing is selected).
+
+        Updates both the audio file tags (FLAC) and the ``track_info`` DB
+        record so the two stay in sync.
+        """
+        from tkinter import messagebox
+
+        selected = self.tree.selection()
+        if selected:
+            target_paths = set()
+            for iid in selected:
+                vals = self.tree.item(iid, "values")
+                if vals and len(vals) >= 3:
+                    target_paths.add(vals[2])
+            rows = [r for r in self._results
+                    if r.get("full_path") in target_paths]
+            scope_label = f"{len(rows)} selected track{'s' if len(rows) != 1 else ''}"
+        else:
+            rows = list(self._results)
+            scope_label = f"all {len(rows)} result{'s' if len(rows) != 1 else ''}"
+
+        if not rows:
+            messagebox.showinfo(
+                "Trim Spaces", "No tracks to trim.", parent=self.winfo_toplevel())
+            return
+
+        if not messagebox.askyesno(
+            "Trim Spaces",
+            f"Trim leading/trailing whitespace in Artist/Title/Album for "
+            f"{scope_label}?\n\nFLAC tags on disk and the library DB will be "
+            f"updated.",
+            parent=self.winfo_toplevel(),
+        ):
+            return
+
+        changed = 0
+        errors  = 0
+        for row in rows:
+            path      = row.get("full_path") or ""
+            partition = row.get("partition")
+            rel_path  = row.get("rel_path")
+            if not path or not partition or not rel_path:
+                continue
+
+            old_artist = row.get("artist", "") or ""
+            old_title  = row.get("title",  "") or ""
+            old_album  = row.get("album",  "") or ""
+
+            new_artist = old_artist.strip()
+            new_title  = old_title.strip()
+            new_album  = old_album.strip()
+
+            if (new_artist == old_artist
+                    and new_title == old_title
+                    and new_album == old_album):
+                continue
+
+            try:
+                file_md5 = row.get("file_md5") or ""
+                bitrate  = row.get("bitrate", "") or ""
+                if path.lower().endswith(".flac") and os.path.exists(path):
+                    flac = FLAC(path)
+                    if flac.tags is None:
+                        flac.add_tags()
+                    flac["artist"] = new_artist
+                    flac["title"]  = new_title
+                    flac["album"]  = new_album
+                    flac.save()
+                    file_md5 = compute_file_md5(path)
+                    if flac.info.bitrate:
+                        bitrate = f"{round(flac.info.bitrate / 1000)} kbps"
+
+                upsert_track_info(
+                    partition, rel_path,
+                    artist=new_artist, title=new_title, album=new_album,
+                    bitrate=bitrate, file_md5=file_md5,
+                )
+                self._refresh_result_row(
+                    partition, rel_path,
+                    new_artist, new_title, new_album, bitrate,
+                )
+                changed += 1
+            except Exception as exc:
+                errors += 1
+                _log.error(f"Trim spaces failed for {path}: {exc}")
+
+        msg = f"Trimmed whitespace in {changed} track{'s' if changed != 1 else ''}."
+        if errors:
+            msg += f" ({errors} error{'s' if errors != 1 else ''} — see log.)"
+        self._footer_var.set(msg)
+        self._status_var.set(msg)
+
+    # ------------------------------------------------------------------ #
+    # Use main artist name (resolve aliases via artist_info)              #
+    # ------------------------------------------------------------------ #
+
+    def _use_main_artist_name(self):
+        """For each selected track, resolve the current artist name against
+        ``artist_info`` and replace it with the canonical main name when the
+        current value is an alias.
+
+        Opens a confirmation dialog listing every selected track with its
+        current artist tag and the proposed new artist tag. Tracks whose
+        artist is missing from Artist Info are highlighted; the user can
+        select one and click *Search Selected in Artist Info* to look it up.
+        """
+        from tkinter import messagebox
+
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showinfo(
+                "Use Main Artist Name",
+                "Select one or more tracks in the result table first.",
+                parent=self.winfo_toplevel(),
+            )
+            return
+
+        target_paths: list[str] = []
+        seen_paths: set[str] = set()
+        for iid in selected:
+            vals = self.tree.item(iid, "values")
+            if not vals or len(vals) < 3:
+                continue
+            p = vals[2]
+            if p and p not in seen_paths:
+                seen_paths.add(p)
+                target_paths.append(p)
+
+        path_to_row = {r.get("full_path"): r for r in self._results}
+        tracks = [path_to_row[p] for p in target_paths if p in path_to_row]
+
+        if not tracks:
+            messagebox.showinfo(
+                "Use Main Artist Name", "No tracks to process.",
+                parent=self.winfo_toplevel())
+            return
+
+        # Cache artist_info lookups by case-insensitive current artist name.
+        lookup_cache: dict[str, str | None] = {}
+
+        def resolve_main(name: str) -> str | None:
+            key = name.casefold()
+            if key in lookup_cache:
+                return lookup_cache[key]
+            info = find_artist_by_name_or_alias(name)
+            main = info["name"] if info is not None else None
+            lookup_cache[key] = main
+            return main
+
+        items: list[dict] = []
+        for r in tracks:
+            current = (r.get("artist") or "").strip()
+            if not current:
+                items.append({
+                    "track":   r,
+                    "current": "",
+                    "main":    None,
+                    "status":  "missing",
+                })
+                continue
+            main = resolve_main(current)
+            if main is None:
+                status = "missing"
+            elif main == current:
+                status = "unchanged"
+            else:
+                status = "rename"
+            items.append({
+                "track":   r,
+                "current": current,
+                "main":    main,
+                "status":  status,
+            })
+
+        # Keep the visual order: renames first, then missing, then unchanged,
+        # but preserve the selection order within each bucket.
+        order = {"rename": 0, "missing": 1, "unchanged": 2}
+        items.sort(key=lambda it: order[it["status"]])
+
+        dlg = _UseMainArtistDialog(
+            self.winfo_toplevel(), items,
+            on_search_artist=self._on_search_artist,
+        )
+        self.wait_window(dlg)
+        if not dlg.confirmed:
+            return
+
+        changed = 0
+        errors  = 0
+        for it in items:
+            if it["status"] != "rename":
+                continue
+            row        = it["track"]
+            new_artist = it["main"]
+            path       = row.get("full_path") or ""
+            partition  = row.get("partition")
+            rel_path   = row.get("rel_path")
+            if not path or not partition or not rel_path:
+                continue
+            title    = row.get("title", "") or ""
+            album    = row.get("album", "") or ""
+            bitrate  = row.get("bitrate", "") or ""
+            file_md5 = row.get("file_md5") or ""
+            try:
+                if path.lower().endswith(".flac") and os.path.exists(path):
+                    flac = FLAC(path)
+                    if flac.tags is None:
+                        flac.add_tags()
+                    flac["artist"] = new_artist
+                    flac.save()
+                    file_md5 = compute_file_md5(path)
+                    if flac.info.bitrate:
+                        bitrate = f"{round(flac.info.bitrate / 1000)} kbps"
+
+                upsert_track_info(
+                    partition, rel_path,
+                    artist=new_artist, title=title, album=album,
+                    bitrate=bitrate, file_md5=file_md5,
+                )
+                self._refresh_result_row(
+                    partition, rel_path,
+                    new_artist, title, album, bitrate,
+                )
+                changed += 1
+            except Exception as exc:
+                errors += 1
+                _log.error(f"Use Main Artist failed for {path}: {exc}")
+
+        msg = f"Updated artist tag on {changed} track{'s' if changed != 1 else ''}."
+        if errors:
+            msg += f" ({errors} error{'s' if errors != 1 else ''} — see log.)"
+        self._footer_var.set(msg)
+        self._status_var.set(msg)
 
     # ------------------------------------------------------------------ #
     # Pagination                                                           #
