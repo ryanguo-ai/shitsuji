@@ -158,13 +158,34 @@ class _DeleteLibTracksDialog(tk.Toplevel):
             variable=self._remove_empty_var,
         ).pack(side=tk.LEFT)
 
-        ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(
-            side=tk.RIGHT, padx=(4, 0))
+        cancel_btn = ttk.Button(btn_frame, text="Cancel", command=self.destroy)
+        cancel_btn.pack(side=tk.RIGHT, padx=(4, 0))
         del_label = f"🗑  Delete {n} Track{'s' if n != 1 else ''}"
-        ttk.Button(
+        del_btn = ttk.Button(
             btn_frame, text=del_label,
             command=self._confirm,
-        ).pack(side=tk.RIGHT)
+        )
+        del_btn.pack(side=tk.RIGHT)
+
+        # Visual order in the toolbar: [Delete] [Cancel]
+        # Arrow keys cycle focus between them; Delete is the default.
+        def _focus_cancel(_e=None):
+            cancel_btn.focus_set()
+            return "break"
+
+        def _focus_delete(_e=None):
+            del_btn.focus_set()
+            return "break"
+
+        for btn in (del_btn, cancel_btn):
+            btn.bind("<Right>", _focus_cancel)
+            btn.bind("<Left>",  _focus_delete)
+            btn.bind("<Return>", lambda _e, b=btn: b.invoke())
+
+        self.bind("<Escape>", lambda _e: self.destroy())
+
+        # Default focus → the Delete button
+        self.after(0, del_btn.focus_set)
 
     def _confirm(self):
         self.confirmed            = True
@@ -327,6 +348,8 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         self.tree.bind("<Control-a>", lambda _: self.tree.selection_set(self.tree.get_children()))
         self.tree.bind("<Shift-e>", lambda _: self._hotkey_edit_tags())
         self.tree.bind("<Shift-E>", lambda _: self._hotkey_edit_tags())
+        self.tree.bind("<Shift-Delete>", lambda _: self._hotkey_delete_tracks())
+        self.tree.bind("<Shift-KP_Delete>", lambda _: self._hotkey_delete_tracks())
         self._kb_sel = attach_keyboard_range_selection(self.tree)
 
         # Pagination (inside left pane, below tree)
@@ -629,6 +652,14 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         if flac_paths:
             self._edit_tags(flac_paths)
 
+    def _hotkey_delete_tracks(self):
+        """Shift+Del handler — deletes the currently selected library tracks."""
+        selected = self.tree.selection()
+        if not selected:
+            return
+        self._delete_selected_tracks(list(selected))
+        return "break"
+
     def _on_row_right_click(self, event):
         item = self.tree.identify_row(event.y)
         if not item:
@@ -705,11 +736,20 @@ class SearchTab(tk.Frame, AudioMenuMixin):
                 )
                 menu.add_separator()
 
+            # ── Compare & Pick (exactly 2 selected) ── #
+            if len(selected) == 2:
+                menu.add_command(
+                    label="⚖️  Compare & Pick (keep one)…",
+                    command=lambda iids=tuple(selected): self._compare_and_pick(iids),
+                )
+                menu.add_separator()
+
             # ── Delete tracks ── #
             menu.add_separator()
             n_sel = len(selected)
             menu.add_command(
                 label=f"🗑  Delete {'Track' if n_sel == 1 else f'{n_sel} Tracks'} from Library…",
+                accelerator="Shift+Del",
                 command=lambda iids=selected: self._delete_selected_tracks(iids),
             )
 
@@ -845,6 +885,73 @@ class SearchTab(tk.Frame, AudioMenuMixin):
             vals = list(self.tree.item(iid, "values"))
             vals[0] = emoji
             self.tree.item(iid, values=vals)
+
+    def _compare_and_pick(self, iids):
+        """Open the Compare & Pick dialog for exactly two selected rows."""
+        from music.compare_pick_dialog import run_compare_and_pick
+
+        if len(iids) != 2:
+            return
+        left  = self._row_for_iid(iids[0])
+        right = self._row_for_iid(iids[1])
+        if not left or not right:
+            return
+
+        outcome = run_compare_and_pick(self.winfo_toplevel(), dict(left), dict(right))
+        if not outcome:
+            return
+
+        deleted = outcome["deleted"]
+        kept    = outcome["kept"]
+        deleted_id = deleted.get("id")
+        deleted_iid = f"ti_{deleted_id}" if deleted_id is not None else None
+
+        # Remove deleted row from results + tree
+        if deleted_id is not None:
+            self._results = [r for r in self._results if r.get("id") != deleted_id]
+        if deleted_iid and self.tree.exists(deleted_iid):
+            self.tree.delete(deleted_iid)
+
+        # Clear detail panel if it was showing the deleted track
+        if (self._selected_partition, self._selected_rel_path) == (
+            deleted.get("partition"), deleted.get("rel_path"),
+        ):
+            self._detail_panel.clear()
+            self._selected_partition = None
+            self._selected_rel_path  = None
+
+        # If tag edits were applied to the kept track, refresh that row's
+        # visible cells from the new on-disk metadata.
+        if outcome.get("edited_tags") and kept:
+            try:
+                from mutagen.flac import FLAC as _FLAC
+                from datetime import datetime
+                flac = _FLAC(kept.get("full_path", ""))
+                tags = flac.tags or {}
+                self._refresh_result_row(
+                    kept.get("partition", ""),
+                    kept.get("rel_path",  ""),
+                    artist=(tags.get("artist", [""])[0]),
+                    title=(tags.get("title",  [""])[0]),
+                    album=(tags.get("album",  [""])[0]),
+                    bitrate=(f"{round(flac.info.bitrate / 1000)} kbps"
+                             if flac.info.bitrate else ""),
+                )
+                _ = datetime  # noqa  (timestamp updated inside _refresh_result_row)
+            except Exception:
+                _log.exception("Could not refresh kept-row metadata after compare-pick")
+
+        # Re-stripe remaining visible rows
+        for i, iid in enumerate(self.tree.get_children()):
+            self.tree.item(iid, tags=("odd" if i % 2 == 0 else "even",))
+
+        remaining = len(self._results)
+        kept_label = (kept.get("title") or os.path.basename(kept.get("full_path", "")) or "?")
+        self._status_var.set(
+            f"⚖️  Kept “{kept_label}”, deleted the other — {remaining} remaining."
+        )
+        self._footer_var.set(f"{remaining} track{'s' if remaining != 1 else ''} matched.")
+        self._update_pagination_controls()
 
     # ------------------------------------------------------------------ #
     # Delete tracks from library                                           #

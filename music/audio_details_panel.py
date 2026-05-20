@@ -26,6 +26,187 @@ def _fmt_size(n: int) -> str:
     return f"{n:.1f} GB"
 
 
+class _PasteJsonDialog(tk.Toplevel):
+    """Side-by-side review dialog for pasting tags from JSON.
+
+    Shows columns: Apply | Tag | Current Value | New Value (editable).
+    Rows whose current ≠ new are highlighted; rows with no change are
+    unchecked by default. Press *Apply* to commit; *Cancel* to abort.
+    """
+
+    def __init__(self, parent, current: dict, new_tags: dict):
+        """
+        Parameters
+        ----------
+        current : dict[tag → (iid, value)]
+        new_tags : dict[tag → value]
+        """
+        super().__init__(parent)
+        self.title("Paste Tags from JSON — Review")
+        self.configure(bg="#f5f5f5")
+        self.grab_set()
+        self.minsize(620, 360)
+        self.resizable(True, True)
+
+        self.confirmed = False
+        self.result: dict[str, str] = {}   # tag → new value (only applied rows)
+
+        # Build merged row list, sorted: changed first, then additions, then same.
+        all_tags = sorted(set(current) | set(new_tags))
+        self._rows: list[dict] = []
+        for tag in all_tags:
+            if tag not in new_tags:
+                continue   # JSON didn't mention it → don't propose any change
+            old_val = current.get(tag, ("", ""))[1] if tag in current else ""
+            new_val = new_tags[tag]
+            status = (
+                "new" if tag not in current
+                else ("same" if old_val == new_val else "changed")
+            )
+            self._rows.append({
+                "tag": tag,
+                "old": old_val,
+                "new": new_val,
+                "status": status,
+                "apply_var": tk.BooleanVar(value=(status != "same")),
+                "value_var": tk.StringVar(value=new_val),
+            })
+
+        # Sort: changed → new → same
+        order = {"changed": 0, "new": 1, "same": 2}
+        self._rows.sort(key=lambda r: (order[r["status"]], r["tag"]))
+
+        self._build()
+        self._center()
+
+    def _build(self):
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)
+
+        # Header
+        hdr = tk.Frame(self, bg="#2c3e50", pady=8, padx=12)
+        hdr.grid(row=0, column=0, sticky="ew")
+        tk.Label(
+            hdr, text="📋  Paste Tags from JSON",
+            font=("Segoe UI", 12, "bold"), fg="white", bg="#2c3e50",
+        ).pack(side=tk.LEFT)
+
+        n_changed = sum(1 for r in self._rows if r["status"] == "changed")
+        n_new     = sum(1 for r in self._rows if r["status"] == "new")
+        n_same    = sum(1 for r in self._rows if r["status"] == "same")
+        summ = tk.Frame(self, bg="#eaf2fb", padx=12, pady=6)
+        summ.grid(row=1, column=0, sticky="ew")
+        tk.Label(
+            summ,
+            text=(
+                f"{n_changed} changed   •   {n_new} new   •   {n_same} unchanged."
+                "   Uncheck rows to skip them. Edit the New Value column to adjust."
+            ),
+            font=("Segoe UI", 9), fg="#1a5276", bg="#eaf2fb",
+        ).pack(anchor="w")
+
+        # Scrollable table area
+        outer = tk.Frame(self, bg="#f5f5f5")
+        outer.grid(row=2, column=0, sticky="nsew", padx=12, pady=(8, 4))
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(1, weight=1)
+
+        # Column headings (manual, since each row contains an Entry widget)
+        head = tk.Frame(outer, bg="#d6eaf8")
+        head.grid(row=0, column=0, sticky="ew")
+        for c, w in enumerate((60, 160, 200, 200)):
+            head.columnconfigure(c, weight=(0 if c == 0 else 1), minsize=w)
+        for c, text in enumerate(("Apply", "Tag", "Current Value", "New Value")):
+            tk.Label(
+                head, text=text, font=("Segoe UI", 9, "bold"),
+                bg="#d6eaf8", fg="#1a5276", anchor="w", padx=6, pady=4,
+            ).grid(row=0, column=c, sticky="ew")
+
+        canvas = tk.Canvas(outer, bg="#ffffff", highlightthickness=0)
+        vsb = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.grid(row=1, column=0, sticky="nsew")
+        vsb.grid  (row=1, column=1, sticky="ns")
+
+        inner = tk.Frame(canvas, bg="#ffffff")
+        inner_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_inner(_e=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        inner.bind("<Configure>", _on_inner)
+
+        def _on_canvas(e):
+            canvas.itemconfigure(inner_id, width=e.width)
+        canvas.bind("<Configure>", _on_canvas)
+
+        for c, w in enumerate((60, 160, 200, 200)):
+            inner.columnconfigure(c, weight=(0 if c == 0 else 1), minsize=w)
+
+        bg_for = {
+            "changed": "#fefce8",
+            "new":     "#eafaf1",
+            "same":    "#ffffff",
+        }
+        fg_for = {
+            "changed": "#7d6608",
+            "new":     "#196f3d",
+            "same":    "#666666",
+        }
+
+        for i, r in enumerate(self._rows):
+            bg = bg_for[r["status"]]
+            tk.Checkbutton(
+                inner, variable=r["apply_var"], bg=bg, activebackground=bg,
+            ).grid(row=i, column=0, sticky="w", padx=4, pady=1)
+            tk.Label(
+                inner, text=r["tag"], font=("Segoe UI", 9, "bold"),
+                bg=bg, fg=fg_for[r["status"]], anchor="w", padx=4,
+            ).grid(row=i, column=1, sticky="ew", pady=1)
+            tk.Label(
+                inner, text=r["old"], font=("Segoe UI", 9),
+                bg=bg, fg="#555555", anchor="w", padx=4,
+                wraplength=320, justify="left",
+            ).grid(row=i, column=2, sticky="ew", pady=1)
+            ttk.Entry(
+                inner, textvariable=r["value_var"], font=("Segoe UI", 9),
+            ).grid(row=i, column=3, sticky="ew", padx=4, pady=1)
+
+        # Footer buttons
+        btn = tk.Frame(self, bg="#f5f5f5", pady=8, padx=12)
+        btn.grid(row=3, column=0, sticky="ew")
+
+        def _toggle_all(val: bool):
+            for r in self._rows:
+                r["apply_var"].set(val)
+
+        ttk.Button(btn, text="Select All",   command=lambda: _toggle_all(True)
+                   ).pack(side=tk.LEFT)
+        ttk.Button(btn, text="Deselect All", command=lambda: _toggle_all(False)
+                   ).pack(side=tk.LEFT, padx=(6, 0))
+
+        ttk.Button(btn, text="Cancel", command=self.destroy
+                   ).pack(side=tk.RIGHT, padx=(4, 0))
+        ttk.Button(btn, text="Apply",  command=self._on_apply
+                   ).pack(side=tk.RIGHT)
+
+    def _on_apply(self):
+        out: dict[str, str] = {}
+        for r in self._rows:
+            if r["apply_var"].get():
+                out[r["tag"]] = r["value_var"].get()
+        self.result = out
+        self.confirmed = True
+        self.destroy()
+
+    def _center(self):
+        self.update_idletasks()
+        w  = max(self.winfo_reqwidth(),  680)
+        h  = max(self.winfo_reqheight(), 420)
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
+
 class AudioDetailsPanel(tk.Frame):
 
     def __init__(self, master, on_after_save=None, title: str = "File Details"):
@@ -133,6 +314,10 @@ class AudioDetailsPanel(tk.Frame):
         ttk.Button(
             btn_frame, text="Copy JSON",
             command=self._copy_tags_json,
+        ).pack(side=tk.RIGHT, padx=(0, 4))
+        ttk.Button(
+            btn_frame, text="Paste JSON",
+            command=self._paste_tags_json,
         ).pack(side=tk.RIGHT, padx=(0, 4))
         ttk.Button(
             btn_frame, text="+ Add Tag",
@@ -299,6 +484,81 @@ class AudioDetailsPanel(tk.Frame):
         }
         self.clipboard_clear()
         self.clipboard_append(json.dumps(data, ensure_ascii=False, indent=2))
+
+    def _paste_tags_json(self):
+        """Paste tags from a clipboard JSON object, with side-by-side review.
+
+        The clipboard must contain a JSON object whose keys are tag names and
+        whose values are the new tag values (string or list of strings). A
+        dialog lets the user see current-vs-new values, edit the proposed
+        values, and selectively apply rows before they touch the tag tree.
+        """
+        import json
+        if not self._current_path:
+            messagebox.showinfo(
+                "Paste JSON",
+                "Load a file first before pasting tags.",
+                parent=self,
+            )
+            return
+        try:
+            raw = self.clipboard_get()
+        except tk.TclError:
+            messagebox.showerror("Paste JSON", "Clipboard is empty.", parent=self)
+            return
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            messagebox.showerror(
+                "Paste JSON",
+                f"Clipboard does not contain valid JSON:\n{exc}",
+                parent=self,
+            )
+            return
+        if not isinstance(payload, dict) or not payload:
+            messagebox.showerror(
+                "Paste JSON",
+                "Clipboard JSON must be a non-empty object of tag → value.",
+                parent=self,
+            )
+            return
+
+        # Normalise: tag name upper-cased, values flattened to a single string.
+        new_tags: dict[str, str] = {}
+        for k, v in payload.items():
+            if not isinstance(k, str) or not k.strip():
+                continue
+            if isinstance(v, list):
+                v = " / ".join(str(x) for x in v)
+            elif v is None:
+                v = ""
+            else:
+                v = str(v)
+            new_tags[k.strip().upper()] = v
+
+        current: dict[str, tuple[str, str]] = {}   # tag → (iid, current_value)
+        for iid in self._tag_tree.get_children():
+            if iid in self._deleted_items:
+                continue
+            tag, val = self._tag_tree.item(iid, "values")
+            current[str(tag).upper()] = (iid, str(val))
+
+        dlg = _PasteJsonDialog(self.winfo_toplevel(), current, new_tags)
+        self.wait_window(dlg)
+        if not dlg.confirmed:
+            return
+
+        applied = 0
+        for tag, new_val in dlg.result.items():
+            if tag in current:
+                iid, _ = current[tag]
+                self._tag_tree.item(iid, values=(tag, new_val))
+            else:
+                self._tag_tree.insert("", "end", values=(tag, new_val))
+            applied += 1
+
+        if applied:
+            self._mark_dirty()
 
     # ------------------------------------------------------------------ #
     # Add new tag                                                          #
