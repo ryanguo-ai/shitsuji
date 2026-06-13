@@ -18,6 +18,9 @@ AUDIO_EXTENSIONS = {
     "WV", "M4A", "WMA", "DSF", "DFF", "MPC",
 }
 
+# File types into which the Cover Art Finder can embed a front-cover image.
+COVER_ART_EMBED_EXTENSIONS = {"FLAC", "MP3", "M4A"}
+
 
 class AudioMenuMixin:
     """Mixin that adds audio file context-menu actions to a tk.Frame subclass."""
@@ -98,6 +101,10 @@ class AudioMenuMixin:
             p for p in paths
             if os.path.splitext(p)[1].lstrip(".").upper() == "FLAC"
         ]
+        cover_art_paths = [
+            p for p in paths
+            if os.path.splitext(p)[1].lstrip(".").upper() in COVER_ART_EMBED_EXTENSIONS
+        ]
 
         menu = tk.Menu(self, tearoff=0)
 
@@ -118,9 +125,11 @@ class AudioMenuMixin:
                 accelerator="Shift+E",
                 command=lambda: self._edit_tags(flac_paths),
             )
+
+        if cover_art_paths:
             menu.add_command(
                 label="🎨  Find Cover Art",
-                command=lambda: self._find_cover_art(flac_paths),
+                command=lambda: self._find_cover_art(cover_art_paths),
             )
 
         if audio_paths:

@@ -11,21 +11,85 @@ import subprocess
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+import mutagen
 from mutagen.flac import FLAC
+from mutagen.id3 import ID3, ID3NoHeaderError
+from mutagen.mp4 import MP4
 
 
 # ------------------------------------------------------------------ #
 # Helpers                                                             #
 # ------------------------------------------------------------------ #
 
-def _load_flac_info(path: str) -> dict:
-    """Return a dict with tags, bitrate, duration, and first cover art for *path*."""
+_FLAC_EXT = ".flac"
+_MP3_EXT = ".mp3"
+_MP4_EXTS = (".m4a", ".m4b", ".mp4")
+
+
+def _extract_first_cover(path: str) -> bytes | None:
+    """Return the raw bytes of the first embedded picture in *path* (any format)."""
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext == _FLAC_EXT:
+            flac = FLAC(path)
+            pictures = flac.pictures
+            if not pictures:
+                return None
+            front = next((p for p in pictures if p.type == 3), pictures[0])
+            return front.data
+        if ext == _MP3_EXT:
+            try:
+                tags = ID3(path)
+            except ID3NoHeaderError:
+                return None
+            apics = [v for k, v in tags.items() if k.startswith("APIC")]
+            if not apics:
+                return None
+            front = next((a for a in apics if getattr(a, "type", None) == 3), apics[0])
+            return front.data
+        if ext in _MP4_EXTS:
+            mp4 = MP4(path)
+            covers = (mp4.tags or {}).get("covr") if mp4.tags else None
+            if not covers:
+                return None
+            return bytes(covers[0])
+    except Exception:
+        return None
+    return None
+
+
+def _count_pictures(path: str) -> int:
+    """Return the number of embedded picture entries in *path*."""
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext == _FLAC_EXT:
+            return len(FLAC(path).pictures)
+        if ext == _MP3_EXT:
+            try:
+                tags = ID3(path)
+            except ID3NoHeaderError:
+                return 0
+            return sum(1 for k in tags.keys() if k.startswith("APIC"))
+        if ext in _MP4_EXTS:
+            mp4 = MP4(path)
+            covers = (mp4.tags or {}).get("covr") if mp4.tags else None
+            return len(covers) if covers else 0
+    except Exception:
+        return 0
+    return 0
+
+
+def _load_audio_info(path: str) -> dict:
+    """Return a dict with tags, bitrate, duration, and first cover art for *path*.
+
+    Supports FLAC, MP3, and M4A/MP4. Tag keys are upper-cased for consistency.
+    """
     result: dict = {
         "path": path,
         "bitrate": "",
         "duration": "",
         "tags": {},
-        "cover": None,        # raw bytes of first picture, or None
+        "cover": None,
         "cover_dims": "",
         "cover_count": 0,
         "cover_size_kb": "",
@@ -33,30 +97,42 @@ def _load_flac_info(path: str) -> dict:
     if not path or not os.path.isfile(path):
         return result
     try:
-        flac = FLAC(path)
-        if flac.info:
-            br = flac.info.bitrate
-            result["bitrate"] = f"{round(br / 1000)} kbps" if br else ""
-            secs = int(flac.info.length or 0)
-            result["duration"] = f"{secs // 60}:{secs % 60:02d}"
-        if flac.tags:
-            for k, vlist in flac.tags.as_dict().items():
-                result["tags"][k.upper()] = vlist[0] if vlist else ""
-        result["cover_count"] = len(flac.pictures)
-        for pic in flac.pictures:
-            result["cover"] = pic.data
-            kb = len(pic.data) / 1024
+        audio = mutagen.File(path, easy=True)
+        if audio is not None:
+            info = getattr(audio, "info", None)
+            if info is not None:
+                br = getattr(info, "bitrate", 0) or 0
+                if br:
+                    result["bitrate"] = f"{round(br / 1000)} kbps"
+                secs = int(getattr(info, "length", 0) or 0)
+                result["duration"] = f"{secs // 60}:{secs % 60:02d}"
+            if audio.tags:
+                for k, v in audio.tags.items():
+                    if isinstance(v, (list, tuple)):
+                        result["tags"][k.upper()] = v[0] if v else ""
+                    else:
+                        result["tags"][k.upper()] = str(v)
+
+        result["cover_count"] = _count_pictures(path)
+        cover_bytes = _extract_first_cover(path)
+        if cover_bytes:
+            result["cover"] = cover_bytes
+            kb = len(cover_bytes) / 1024
             result["cover_size_kb"] = f"{kb:.1f} KB"
             try:
                 from PIL import Image
-                img = Image.open(io.BytesIO(pic.data))
+                img = Image.open(io.BytesIO(cover_bytes))
                 result["cover_dims"] = f"{img.width}×{img.height}"
             except Exception:
                 result["cover_dims"] = "?"
-            break          # only need the first picture
     except Exception:
         pass
     return result
+
+
+# Backwards-compat alias — older callers still import this name.
+def _load_flac_info(path: str) -> dict:
+    return _load_audio_info(path)
 
 
 # ------------------------------------------------------------------ #

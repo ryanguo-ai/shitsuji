@@ -94,34 +94,35 @@ def compute_dest_full_path(lib_root: str, partition: str,
 
 
 def _read_tags(path: str) -> tuple[str, str, str]:
-    """Return (artist, album, title) from a FLAC file; empty strings on failure."""
+    """Return (artist, album, title) for any mutagen-supported audio file."""
     try:
-        f = FLAC(path)
-        artist = (f.get("artist") or f.get("ARTIST") or [""])[0]
-        album  = (f.get("album")  or f.get("ALBUM")  or [""])[0]
-        title  = (f.get("title")  or f.get("TITLE")  or [""])[0]
-        return artist, album, title
+        import mutagen
+        audio = mutagen.File(path, easy=True)
+        if audio is None or audio.tags is None:
+            return "", "", ""
+
+        def first(key: str) -> str:
+            v = audio.tags.get(key) or audio.tags.get(key.upper())
+            if not v:
+                return ""
+            if isinstance(v, (list, tuple)):
+                return str(v[0]) if v else ""
+            return str(v)
+
+        return first("artist"), first("album"), first("title")
     except Exception:
         return "", "", ""
 
 
 def _check_lib_ready(path: str) -> bool:
-    """Return True if ARTIST/TITLE/ALBUM tags are present AND cover > 300×300."""
-    try:
-        from PIL import Image
-        flac = FLAC(path)
-        tags = flac.tags or {}
-        if not (tags.get("artist", [""])[0] and
-                tags.get("title",  [""])[0] and
-                tags.get("album",  [""])[0]):
-            return False
-        for pic in flac.pictures:
-            img = Image.open(io.BytesIO(pic.data))
-            if img.width >= 300 and img.height >= 300:
-                return True
-        return False
-    except Exception:
-        return False
+    """Return True if the file is ready to be sent to the library.
+
+    FLAC: ARTIST/TITLE/ALBUM tags present AND a ≥300×300 embedded cover.
+    MP3/M4A: ARTIST/TITLE/ALBUM present AND (≥300×300 cover OR
+             QUALITY tag == "Collectible").
+    """
+    from music.folder_scanner import _check_lib_ready as _ready
+    return _ready(path)
 
 
 def _build_lib_index() -> tuple[set[str], set[tuple[str, str, str]]]:

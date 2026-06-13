@@ -38,6 +38,9 @@ _RANK_FILTER_OPTS = [
 _RANK_FILTER_LABELS = [o[0] for o in _RANK_FILTER_OPTS]
 _RANK_FILTER_MAP    = {o[0]: o[1] for o in _RANK_FILTER_OPTS}
 
+# Sentinel label for the partition filter meaning "do not filter by partition".
+_ALL_PARTITIONS_LABEL = "All Partitions"
+
 
 def _fuzzy_match(query: str, target: str, threshold: float = 0.5) -> bool:
     """Return True if *query* fuzzy-matches *target* (empty query matches everything)."""
@@ -225,7 +228,6 @@ class _UseMainArtistDialog(tk.Toplevel):
         self.resizable(True, True)
         self._build()
         self._center()
-
     def _build(self):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(2, weight=1)
@@ -308,52 +310,106 @@ class _UseMainArtistDialog(tk.Toplevel):
         btn_frame = tk.Frame(self, bg="#f5f5f5", pady=8, padx=12)
         btn_frame.grid(row=3, column=0, sticky="ew")
 
-        search_btn = ttk.Button(
-            btn_frame, text="🔍 Search Selected in Artist Info",
+        self._search_btn = ttk.Button(
+            btn_frame, text="🎶 Search in MusicBrainz",
             command=self._search_selected_missing,
         )
-        search_btn.pack(side=tk.LEFT)
-        if self._on_search_artist is None or n_missing == 0:
-            search_btn.state(["disabled"])
+        self._search_btn.pack(side=tk.LEFT)
+        if n_missing == 0:
+            self._search_btn.state(["disabled"])
 
         cancel_btn = ttk.Button(btn_frame, text="Cancel", command=self.destroy)
         cancel_btn.pack(side=tk.RIGHT, padx=(4, 0))
-        apply_btn = ttk.Button(
+        self._apply_btn = ttk.Button(
             btn_frame, text=f"✓ Apply {n_rename} Rename{'s' if n_rename != 1 else ''}",
             command=self._confirm,
         )
-        apply_btn.pack(side=tk.RIGHT)
+        self._apply_btn.pack(side=tk.RIGHT)
         if n_rename == 0:
-            apply_btn.state(["disabled"])
+            self._apply_btn.state(["disabled"])
 
         def _focus_cancel(_e=None):
             cancel_btn.focus_set(); return "break"
 
         def _focus_apply(_e=None):
-            apply_btn.focus_set(); return "break"
+            self._apply_btn.focus_set(); return "break"
 
-        for btn in (apply_btn, cancel_btn):
+        for btn in (self._apply_btn, cancel_btn):
             btn.bind("<Right>", _focus_cancel)
             btn.bind("<Left>",  _focus_apply)
             btn.bind("<Return>", lambda _e, b=btn: b.invoke())
 
         self.bind("<Escape>", lambda _e: self.destroy())
-        self.after(0, (apply_btn if n_rename else cancel_btn).focus_set)
+        self.after(0, (self._apply_btn if n_rename else cancel_btn).focus_set)
+
+    def _refresh_row(self, idx: int) -> None:
+        """Re-render row ``idx`` after its status changed (e.g. an artist was
+        imported from MusicBrainz)."""
+        it = self._items[idx]
+        status_lbl = {
+            "rename":    "Will rename",
+            "unchanged": "Already main",
+            "missing":   "Artist Info not found",
+        }[it["status"]]
+        track = it["track"]
+        self._tree.item(
+            str(idx),
+            tags=(it["status"],),
+            values=(
+                track.get("title", "") or "",
+                track.get("album", "") or "",
+                it["current"],
+                it["main"] or "—",
+                status_lbl,
+            ),
+        )
+
+    def _refresh_counts(self) -> None:
+        n_rename  = sum(1 for it in self._items if it["status"] == "rename")
+        n_missing = sum(1 for it in self._items if it["status"] == "missing")
+        self._apply_btn.configure(
+            text=f"✓ Apply {n_rename} Rename{'s' if n_rename != 1 else ''}")
+        self._apply_btn.state(["!disabled"] if n_rename else ["disabled"])
+        self._search_btn.state(["!disabled"] if n_missing else ["disabled"])
 
     def _search_selected_missing(self):
-        if self._on_search_artist is None:
-            return
-        seen: set[str] = set()
+        # Import lazily to avoid a circular import with artist_panel.
+        from music.artist_panel import prompt_mb_search_and_import
+
+        # Pick the first missing row in the user's selection (or any missing
+        # row if nothing is selected) and open the MusicBrainz prompt.
+        target_idx = None
+        target_name = ""
         for iid in self._tree.selection():
             it = self._items[int(iid)]
-            if it["status"] != "missing":
+            if it["status"] == "missing":
+                target_idx, target_name = int(iid), it["current"]
+                break
+        if target_idx is None:
+            for i, it in enumerate(self._items):
+                if it["status"] == "missing":
+                    target_idx, target_name = i, it["current"]
+                    break
+        if target_idx is None:
+            return
+
+        imported = prompt_mb_search_and_import(self, query=target_name)
+        if imported is None:
+            return
+
+        # Re-resolve every missing row against the freshly imported artist
+        # info so all matching rows flip to "rename" in one go.
+        for i, it in enumerate(self._items):
+            if it["status"] != "missing" or not it["current"]:
                 continue
-            key = it["current"].casefold()
-            if key in seen:
+            info = find_artist_by_name_or_alias(it["current"])
+            if info is None:
                 continue
-            seen.add(key)
-            self._on_search_artist(it["current"])
-            return  # only search the first missing artist to avoid spamming
+            main = info["name"]
+            it["main"] = main
+            it["status"] = "unchanged" if main == it["current"] else "rename"
+            self._refresh_row(i)
+        self._refresh_counts()
 
     def _confirm(self):
         self.confirmed = True
@@ -436,31 +492,51 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         album_entry.pack(side=tk.LEFT, padx=(4, 16))
         album_entry.bind("<Return>", lambda _: self._search())
 
-        ttk.Button(inp, text="Search", command=self._search).pack(side=tk.LEFT)
-        ttk.Button(inp, text="Clear",  command=self._clear).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(
-            inp, text="🎲 Random song list", command=self._random_song_list,
-        ).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(
-            inp, text="🧬 Find Duplicates", command=self._find_duplicates,
-        ).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(
-            inp, text="✂ Trim Spaces", command=self._trim_spaces,
-        ).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(
-            inp, text="🎤 Use Main Artist Name", command=self._use_main_artist_name,
-        ).pack(side=tk.LEFT, padx=(6, 0))
+        # Partition filter
+        tk.Label(inp, text="Partition:", font=("Segoe UI", 9), bg="#f5f5f5").pack(side=tk.LEFT)
+        self._partition_var = tk.StringVar(value=_ALL_PARTITIONS_LABEL)
+        partitions = [_ALL_PARTITIONS_LABEL] + sorted(
+            self._settings.get("music_lib_paths", {}).keys()
+        )
+        self._partition_cb = ttk.Combobox(
+            inp, textvariable=self._partition_var,
+            values=partitions, state="readonly", width=14,
+        )
+        self._partition_cb.pack(side=tk.LEFT, padx=(4, 16))
+        self._partition_cb.bind("<<ComboboxSelected>>", lambda _: self._search())
 
         # Rating filter
         tk.Label(inp, text="Rating:", font=("Segoe UI", 9), bg="#f5f5f5").pack(
-            side=tk.LEFT, padx=(20, 4))
+            side=tk.LEFT, padx=(4, 4))
         self._rank_filter_var = tk.StringVar(value=_RANK_FILTER_LABELS[0])
         rank_cb = ttk.Combobox(
             inp, textvariable=self._rank_filter_var,
             values=_RANK_FILTER_LABELS, state="readonly", width=11,
         )
-        rank_cb.pack(side=tk.LEFT)
+        rank_cb.pack(side=tk.LEFT, padx=(0, 16))
         rank_cb.bind("<<ComboboxSelected>>", lambda _: self._search())
+
+        ttk.Button(inp, text="Search", command=self._search).pack(side=tk.LEFT)
+        ttk.Button(inp, text="Clear",  command=self._clear).pack(side=tk.LEFT, padx=(6, 0))
+
+        # ── Utilities row ─────────────────────────────────────────────── #
+        util = tk.Frame(self, bg="#f5f5f5", padx=16)
+        util.pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(
+            util, text="🎲 Random song list", command=self._random_song_list,
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            util, text="🆕 Latest added songs", command=self._latest_added_songs,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(
+            util, text="🧬 Find Duplicates", command=self._find_duplicates,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(
+            util, text="✂ Trim Spaces", command=self._trim_spaces,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(
+            util, text="🎤 Use Main Artist Name", command=self._use_main_artist_name,
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
         # ── Status label ─────────────────────────────────────────────── #
         self._status_var = tk.StringVar(value="Press Search or Enter to load library.")
@@ -597,6 +673,10 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         title_q  = self._title_var.get().strip()
         album_q  = self._album_var.get().strip()
         min_rank = _RANK_FILTER_MAP.get(self._rank_filter_var.get(), 0)
+        partition_q = self._partition_var.get()
+        partition_filter = (
+            None if partition_q == _ALL_PARTITIONS_LABEL else partition_q
+        )
 
         self._status_var.set("Searching…")
         self.update_idletasks()
@@ -629,7 +709,7 @@ class SearchTab(tk.Frame, AudioMenuMixin):
 
         self._results = []
         lib_paths = self._settings.get("music_lib_paths", {})
-        for row in get_track_info():
+        for row in get_track_info(partition_filter):
             ranking = int(row["ranking"] or 0)
             if ranking < min_rank:
                 continue
@@ -663,6 +743,7 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         self._artist_var.set("")
         self._title_var.set("")
         self._album_var.set("")
+        self._partition_var.set(_ALL_PARTITIONS_LABEL)
         self._rank_filter_var.set(_RANK_FILTER_LABELS[0])
         self._results = []
         self._page = 0
@@ -682,6 +763,7 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         self._artist_var.set(artist)
         self._title_var.set(title)
         self._album_var.set(album)
+        self._partition_var.set(_ALL_PARTITIONS_LABEL)
         self._rank_filter_var.set(_RANK_FILTER_LABELS[0])
         self._search()
 
@@ -721,6 +803,50 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         )
         self._footer_var.set(
             f"{count} random track{'s' if count != 1 else ''} loaded."
+        )
+
+    def _latest_added_songs(self, n: int = 100) -> None:
+        """Load the *n* most recently added tracks, ordered newest first.
+
+        Recency is based on each track's ``updated_at`` timestamp (set when a
+        song is first catalogued / last refreshed in the library).
+        """
+        self._status_var.set("Loading latest added songs…")
+        self.update_idletasks()
+
+        lib_paths = self._settings.get("music_lib_paths", {})
+        all_rows = list(get_track_info())
+
+        # Newest first. ``updated_at`` is an ISO-ish "YYYY-MM-DD HH:MM:SS"
+        # string, so lexical sorting matches chronological ordering.
+        all_rows.sort(key=lambda r: (r["updated_at"] or ""), reverse=True)
+        latest = all_rows[:n]
+
+        self._results = []
+        for row in latest:
+            d = dict(row)
+            lib_root = lib_paths.get(d["partition"], "")
+            d["full_path"] = (
+                os.path.join(lib_root, d["partition"], d["rel_path"])
+                if lib_root else d["rel_path"]
+            )
+            d["ranking"] = int(row["ranking"] or 0)
+            self._results.append(d)
+
+        self._sort_col = None
+        self._sort_rev = False
+        self._reset_headings()
+        self._page = 0
+        self._detail_panel.clear()
+        self._show_page()
+
+        count = len(self._results)
+        self._status_var.set(
+            f"🆕 {count} latest added track{'s' if count != 1 else ''} "
+            f"(of {len(all_rows)} in lib)."
+        )
+        self._footer_var.set(
+            f"{count} latest added track{'s' if count != 1 else ''} loaded."
         )
 
     def _find_duplicates(self) -> None:
@@ -902,10 +1028,15 @@ class SearchTab(tk.Frame, AudioMenuMixin):
             menu.add_separator()
 
             # ── Paste cover art from clipboard ── #
-            if flac_paths:
+            from music.cover_art_panel import SUPPORTED_EMBED_EXTS
+            cover_paths = [
+                p for p in paths
+                if os.path.splitext(p)[1].lower() in SUPPORTED_EMBED_EXTS
+            ]
+            if cover_paths:
                 menu.add_command(
                     label="🖼  Embed Cover Art from Clipboard",
-                    command=lambda fp=flac_paths: self._paste_cover_art_to_selected(fp),
+                    command=lambda cp=cover_paths: self._paste_cover_art_to_selected(cp),
                 )
                 menu.add_separator()
 
@@ -963,12 +1094,12 @@ class SearchTab(tk.Frame, AudioMenuMixin):
 
         AudioAnalysisPanel(self.winfo_toplevel(), path, on_complete=_on_complete)
 
-    def _paste_cover_art_to_selected(self, flac_paths: list[str]) -> None:
-        """Read an image from the clipboard, show a preview dialog, then embed on confirm."""
+    def _paste_cover_art_to_selected(self, audio_paths: list[str]) -> None:
+        """Read an image from the clipboard, show a preview dialog, then embed into FLAC/MP3/M4A files."""
         from PIL import ImageGrab, Image
-        from mutagen.flac import FLAC, Picture
         import io as _io
         from music.folder_scanner import _PasteCoverArtDialog
+        from music.cover_art_panel import embed_front_cover
 
         try:
             img = ImageGrab.grabclipboard()
@@ -995,37 +1126,24 @@ class SearchTab(tk.Frame, AudioMenuMixin):
             mime = "image/jpeg"
         img_bytes = buf.getvalue()
 
-        dlg = _PasteCoverArtDialog(self, img, img_bytes, mime, len(flac_paths))
+        dlg = _PasteCoverArtDialog(self, img, img_bytes, mime, len(audio_paths))
         self.wait_window(dlg)
         if not dlg.confirmed:
             return
 
         log = get_logger("search_paste_cover")
         errors: list[str] = []
-        for path in flac_paths:
+        depth = max(len(img.getbands()), 1) * 8
+        for path in audio_paths:
             try:
-                flac = FLAC(path)
-                other_pictures = [p for p in flac.pictures if p.type != 3]
-                flac.clear_pictures()
-                for p in other_pictures:
-                    flac.add_picture(p)
-                pic = Picture()
-                pic.type = 3
-                pic.mime = mime
-                pic.desc = "Front Cover"
-                pic.data = img_bytes
-                pic.width = img.width
-                pic.height = img.height
-                pic.depth = max(len(img.getbands()), 1) * 8
-                flac.add_picture(pic)
-                flac.save()
+                embed_front_cover(path, img_bytes, mime, img.width, img.height, depth)
                 log.info("Embedded cover art: %s", path)
             except Exception as exc:
                 log.error("Failed to embed cover art into %s: %s", path, exc, exc_info=True)
                 errors.append(f"{os.path.basename(path)}: {exc}")
 
         from tkinter import messagebox
-        n = len(flac_paths)
+        n = len(audio_paths)
         if errors:
             messagebox.showerror(
                 "Embed Cover Art",
@@ -1413,7 +1531,8 @@ class SearchTab(tk.Frame, AudioMenuMixin):
         Opens a confirmation dialog listing every selected track with its
         current artist tag and the proposed new artist tag. Tracks whose
         artist is missing from Artist Info are highlighted; the user can
-        select one and click *Search Selected in Artist Info* to look it up.
+        click *Search in MusicBrainz* to import the artist directly, which
+        immediately re-classifies any matching rows as renames.
         """
         from tkinter import messagebox
 

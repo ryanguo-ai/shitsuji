@@ -615,27 +615,160 @@ def _read_audio_tags(file_path: str) -> tuple[str, str, str, str]:
 
 def _check_lib_ready(file_path: str) -> bool:
     """
-    Return True if the file meets lib-ready criteria:
+    Return True if the file meets lib-ready criteria.
+
+    FLAC:
       1. Has non-empty ARTIST, TITLE and ALBUM tags
       2. Has at least one embedded image with both dimensions > 300 px
+
+    MP3 / M4A (lossy):
+      1. Has non-empty ARTIST, TITLE and ALBUM tags
+      2. EITHER an embedded image ≥ 300×300 px,
+         OR the file is explicitly marked as a collector's-only copy
+         via the QUALITY tag set to "Collectible" (case-insensitive).
     """
+    ext = os.path.splitext(file_path)[1].lower()
     try:
         from PIL import Image
         import io
-        flac = FLAC(file_path)
-        tags = flac.tags or {}
-        if not (tags.get("artist", [""])[0] and
-                tags.get("title",  [""])[0] and
-                tags.get("album",  [""])[0]):
+
+        if ext == ".flac":
+            flac = FLAC(file_path)
+            tags = flac.tags or {}
+            if not (tags.get("artist", [""])[0] and
+                    tags.get("title",  [""])[0] and
+                    tags.get("album",  [""])[0]):
+                return False
+            for pic in flac.pictures:
+                img = Image.open(io.BytesIO(pic.data))
+                if img.width >= 300 and img.height >= 300:
+                    return True
             return False
-        for pic in flac.pictures:
-            img = Image.open(io.BytesIO(pic.data))
-            w, h = img.size
-            if w >= 300 and h >= 300:
+
+        if ext in (".mp3", ".m4a", ".m4b", ".mp4"):
+            artist, title, album, _ = _read_audio_tags(file_path)
+            if not (artist and title and album):
+                return False
+            if _has_collectible_marker(file_path):
                 return True
+            cover_bytes = _extract_audio_cover(file_path)
+            if not cover_bytes:
+                return False
+            try:
+                img = Image.open(io.BytesIO(cover_bytes))
+                return img.width >= 300 and img.height >= 300
+            except Exception:
+                return False
+
         return False
     except Exception:
         return False
+
+
+def _extract_audio_cover(file_path: str) -> bytes | None:
+    """Return raw bytes of the first embedded picture for FLAC/MP3/M4A."""
+    # Delegate to the shared extractor used by the comparison/details panels.
+    from music.compare_tracks_panel import _extract_first_cover
+    return _extract_first_cover(file_path)
+
+
+def _has_collectible_marker(file_path: str) -> bool:
+    """Return True if the file's QUALITY tag is set to "Collectible" (any case).
+
+    Reads the tag via mutagen's easy interface; for MP3 (ID3) and MP4 (freeform
+    atoms) the QUALITY key is checked using format-native APIs as a fallback
+    since neither EasyID3 nor EasyMP4 exposes user-defined tags by default.
+    """
+    try:
+        from mutagen import File as MutagenFile
+        from mutagen.id3 import ID3, ID3NoHeaderError
+        from mutagen.mp4 import MP4
+
+        audio = MutagenFile(file_path, easy=True)
+        if audio is not None and audio.tags is not None:
+            for key in ("quality", "QUALITY", "Quality"):
+                if key in audio.tags:
+                    raw = audio.tags[key]
+                    val = raw[0] if isinstance(raw, (list, tuple)) and raw else raw
+                    if str(val).strip().lower() == "collectible":
+                        return True
+
+        ext = os.path.splitext(file_path)[1].lower()
+
+        # MP3 fallback — TXXX:QUALITY is not exposed by EasyID3 unless registered.
+        if ext == ".mp3":
+            try:
+                tags = ID3(file_path)
+            except ID3NoHeaderError:
+                return False
+            for key, frame in tags.items():
+                if key.upper().startswith("TXXX:") and key.upper().endswith(":QUALITY"):
+                    text = getattr(frame, "text", [])
+                    if text and str(text[0]).strip().lower() == "collectible":
+                        return True
+
+        # MP4 fallback — freeform "----:com.apple.iTunes:QUALITY" atom.
+        if ext in (".m4a", ".m4b", ".mp4"):
+            try:
+                mp4 = MP4(file_path)
+            except Exception:
+                return False
+            tags = mp4.tags or {}
+            for key, raw_vals in tags.items():
+                k = str(key)
+                if k.startswith("----:") and k.upper().endswith(":QUALITY"):
+                    for raw in raw_vals or []:
+                        try:
+                            text = raw.decode("utf-8", errors="ignore") if isinstance(raw, (bytes, bytearray)) else str(raw)
+                        except Exception:
+                            text = ""
+                        if text.strip().lower() == "collectible":
+                            return True
+
+        return False
+    except Exception:
+        return False
+
+
+def _set_collectible_marker(file_path: str) -> None:
+    """Write QUALITY="Collectible" into the file's tags (FLAC/MP3/M4A).
+
+    Raises on failure so callers can show an error.
+    """
+    ext = os.path.splitext(file_path)[1].lower()
+
+    if ext == ".flac":
+        flac = FLAC(file_path)
+        if flac.tags is None:
+            flac.add_tags()
+        flac["QUALITY"] = ["Collectible"]
+        flac.save()
+        return
+
+    if ext == ".mp3":
+        from mutagen.id3 import ID3, TXXX, ID3NoHeaderError
+        try:
+            tags = ID3(file_path)
+        except ID3NoHeaderError:
+            tags = ID3()
+        # Remove any prior TXXX:QUALITY frames
+        for key in [k for k in list(tags.keys())
+                    if k.upper().startswith("TXXX:") and k.upper().endswith(":QUALITY")]:
+            del tags[key]
+        tags.add(TXXX(encoding=3, desc="QUALITY", text=["Collectible"]))
+        tags.save(file_path, v2_version=3)
+        return
+
+    if ext in (".m4a", ".m4b", ".mp4"):
+        from mutagen.mp4 import MP4
+        mp4 = MP4(file_path)
+        if mp4.tags is None:
+            mp4.add_tags()
+        mp4.tags["----:com.apple.iTunes:QUALITY"] = [b"Collectible"]
+        mp4.save()
+        return
+
+    raise ValueError(f"Unsupported file type: {ext}")
 
 
 # Characters illegal in Windows file names
@@ -1393,6 +1526,8 @@ class _DeleteFilesDialog(tk.Toplevel):
         """
         super().__init__(parent)
         self.confirmed = False
+        self.remove_empty_folders = False
+        self._remove_empty_var = tk.BooleanVar(value=True)
         self._rows = rows
 
         self.title("Delete Files — Confirm")
@@ -1487,6 +1622,11 @@ class _DeleteFilesDialog(tk.Toplevel):
         )
         self._btn_delete.pack(side=tk.RIGHT)
 
+        ttk.Checkbutton(
+            btn_frame, text="Remove empty folders",
+            variable=self._remove_empty_var,
+        ).pack(side=tk.LEFT)
+
         # Left-to-right nav order: Delete(0)  Cancel(1);  default = Cancel (idx=1)
         self._nav_buttons = [self._btn_delete, self._btn_cancel]
         self._nav_idx = 1
@@ -1534,6 +1674,7 @@ class _DeleteFilesDialog(tk.Toplevel):
 
     def _confirm(self):
         self.confirmed = True
+        self.remove_empty_folders = self._remove_empty_var.get()
         self.destroy()
 
     def _center(self):
@@ -2793,7 +2934,10 @@ class ScanTab(tk.Frame, AudioMenuMixin):
 
         ext       = os.path.splitext(full_path)[1].lstrip(".").upper()
         file_type = ext if ext else "File"
-        artist, title, album, bitrate = _read_flac_tags(full_path) if ext == "FLAC" else ("", "", "", "")
+        if ext in AUDIO_EXTENSIONS:
+            artist, title, album, bitrate = _read_audio_tags(full_path)
+        else:
+            artist = title = album = bitrate = ""
 
         # Look up cached quality (from a prior Analyze spec run) so users
         # don't have to re-analyze the same files every scan.
@@ -2802,6 +2946,15 @@ class ScanTab(tk.Frame, AudioMenuMixin):
             quality = get_track_quality(full_path)
         except Exception:
             quality = ""
+
+        # For lossy formats, surface the QUALITY=Collectible marker in the
+        # Quality column when no spectral-analysis quality has been cached.
+        if not quality and ext in ("MP3", "M4A", "M4B", "AAC", "MP4"):
+            try:
+                if _has_collectible_marker(full_path):
+                    quality = "Collectible"
+            except Exception:
+                pass
 
         tag = "odd" if len(self.tree.get_children()) % 2 == 0 else "even"
         self.tree.insert(
@@ -2851,11 +3004,13 @@ class ScanTab(tk.Frame, AudioMenuMixin):
 
         log = get_logger("scan_delete")
         deleted_iids, errors = [], []
+        deleted_dirs: set[str] = set()
         for iid, sv in zip(selected, rows):
             path = sv[2]
             try:
                 os.remove(path)
                 deleted_iids.append(iid)
+                deleted_dirs.add(os.path.dirname(path))
                 log.info(f"Deleted: {path}")
             except OSError as exc:
                 errors.append(f"{os.path.basename(path)}: {exc}")
@@ -2869,11 +3024,24 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         for i, iid in enumerate(self.tree.get_children()):
             self.tree.item(iid, tags=("odd" if i % 2 else "even",))
 
+        # ── Remove empty parent folders if requested ── #
+        n_folders_removed = 0
+        if dlg.remove_empty_folders:
+            for folder in sorted(deleted_dirs, key=len, reverse=True):
+                try:
+                    if os.path.isdir(folder) and not os.listdir(folder):
+                        os.rmdir(folder)
+                        n_folders_removed += 1
+                        log.info(f"Removed empty folder: {folder}")
+                except OSError as exc:
+                    log.error(f"Remove empty folder failed: {folder} — {exc}")
+
         total = len(self.tree.get_children())
         self.footer_var.set(f"{total} file{'s' if total != 1 else ''} in list.")
         n_ok = len(deleted_iids)
         self.status_var.set(
             f"🗑  Deleted {n_ok} file{'s' if n_ok != 1 else ''} from disk."
+            + (f"  Removed {n_folders_removed} empty folder{'s' if n_folders_removed != 1 else ''}." if n_folders_removed else "")
             + (f"  {len(errors)} error(s)." if errors else "")
         )
 
@@ -3009,10 +3177,47 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         self.tree.item(item_iid, values=vals)
         return True, "ok"
 
+    def _mark_as_collectible(self, paths: list[str]) -> None:
+        """Write QUALITY=Collectible into each given MP3/M4A file.
+
+        Refreshes the ✅ Lib-ready cell for each affected row so the user
+        immediately sees that the files are now eligible for Send to Lib.
+        """
+        log = get_logger("mark_collectible")
+        ok, errors = 0, []
+        for path in paths:
+            try:
+                _set_collectible_marker(path)
+                ok += 1
+                log.info(f"Marked Collectible: {path}")
+            except Exception as exc:
+                log.error(f"Failed to mark Collectible {path!r}: {exc}", exc_info=True)
+                errors.append(f"{os.path.basename(path)}: {exc}")
+
+        # Refresh the Lib-ready (✅) column for affected rows.
+        affected = set(paths)
+        for iid in self.tree.get_children():
+            vals = list(self.tree.item(iid, "values"))
+            if vals and vals[2] in affected:
+                vals[0] = "✅" if _check_lib_ready(vals[2]) else "❌"
+                self.tree.item(iid, values=vals)
+
+        if errors:
+            messagebox.showerror(
+                "Mark as Collectible",
+                f"{ok} succeeded, {len(errors)} failed:\n\n" + "\n".join(errors[:10]),
+                parent=self,
+            )
+            self.status_var.set(f"💎  Marked {ok} file(s) as Collectible, {len(errors)} failed.")
+        else:
+            self.status_var.set(
+                f"💎  Marked {ok} file{'s' if ok != 1 else ''} as Collectible — now eligible for Send to Lib."
+            )
+
     def _paste_cover_art_to_selected(self):
-        """Read an image from the clipboard and embed it into all selected FLAC files."""
+        """Read an image from the clipboard and embed it into selected audio files (FLAC/MP3/M4A)."""
         from PIL import ImageGrab, Image
-        from mutagen.flac import FLAC, Picture
+        from music.cover_art_panel import embed_front_cover, SUPPORTED_EMBED_EXTS
 
         selected = self.tree.selection()
         if not selected:
@@ -3046,27 +3251,27 @@ class ScanTab(tk.Frame, AudioMenuMixin):
             mime = "image/jpeg"
         img_bytes = buf.getvalue()
 
-        # Only offer FLAC files — warn about others
-        flac_paths, skipped = [], []
+        # Only offer supported audio files — warn about others
+        target_paths, skipped = [], []
         for iid in selected:
             vals = self.tree.item(iid, "values")
             path = vals[2]
-            if vals[3].upper() == "FLAC":
-                flac_paths.append(path)
+            if os.path.splitext(path)[1].lower() in SUPPORTED_EMBED_EXTS:
+                target_paths.append(path)
             else:
                 skipped.append(os.path.basename(path))
 
-        if not flac_paths:
+        if not target_paths:
             messagebox.showinfo(
-                "No FLAC files selected",
-                "Cover art embedding is supported for FLAC files only.\n"
-                + (f"{len(skipped)} non-FLAC file(s) were skipped." if skipped else ""),
+                "No supported files selected",
+                "Cover art embedding is supported for FLAC, MP3, and M4A files.\n"
+                + (f"{len(skipped)} unsupported file(s) were skipped." if skipped else ""),
                 parent=self,
             )
             return
 
         # ── Preview dialog ── #
-        dlg = _PasteCoverArtDialog(self, img, img_bytes, mime, len(flac_paths))
+        dlg = _PasteCoverArtDialog(self, img, img_bytes, mime, len(target_paths))
         self.wait_window(dlg)
         if not dlg.confirmed:
             return
@@ -3078,19 +3283,9 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         w, h   = img.size
         depth  = 32 if img.mode in ("RGBA", "LA") else 24
 
-        for path in flac_paths:
+        for path in target_paths:
             try:
-                flac = FLAC(path)
-                flac.clear_pictures()
-                pic          = Picture()
-                pic.type     = 3          # Front cover
-                pic.mime     = mime
-                pic.width    = w
-                pic.height   = h
-                pic.depth    = depth
-                pic.data     = img_bytes
-                flac.add_picture(pic)
-                flac.save()
+                embed_front_cover(path, img_bytes, mime, w, h, depth)
                 ok += 1
                 log.info(f"Embedded cover art: {path}")
             except Exception as exc:
@@ -3100,7 +3295,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
         # ── Status ── #
         parts = [f"🖼  Cover art embedded in {ok} file{'s' if ok != 1 else ''}."]
         if skipped:
-            parts.append(f"{len(skipped)} non-FLAC file(s) skipped.")
+            parts.append(f"{len(skipped)} unsupported file(s) skipped.")
         self.status_var.set("  ".join(parts))
 
         if errors:
@@ -3370,6 +3565,23 @@ class ScanTab(tk.Frame, AudioMenuMixin):
                     command=lambda p=partition: self._open_send_to_lib(paths, p),
                 )
             menu.add_cascade(label="📂  Send to Lib ▶", menu=lib_menu)
+
+            # ── Set Quality=Collectible (only when every selected file is MP3/M4A) ── #
+            _LOSSY_EXTS = (".mp3", ".m4a", ".m4b", ".mp4")
+            all_lossy = (
+                len(paths) >= 1
+                and all(os.path.splitext(p)[1].lower() in _LOSSY_EXTS for p in paths)
+            )
+            if all_lossy:
+                n_c = len(paths)
+                menu.add_command(
+                    label=(
+                        "💎  Set Quality to Collectible"
+                        if n_c == 1
+                        else f"💎  Set Quality to Collectible ({n_c} files)"
+                    ),
+                    command=lambda cp=list(paths): self._mark_as_collectible(cp),
+                )
             menu.add_separator()
 
             # ── Delete files from disk ── #
@@ -3616,15 +3828,9 @@ class ScanTab(tk.Frame, AudioMenuMixin):
 
         for abs_path in paths:
             ext = os.path.splitext(abs_path)[1]
-            # Derive destination paths before copy (tags read inside copy_track_to_lib)
-            try:
-                from mutagen.flac import FLAC as _FLAC
-                f = _FLAC(abs_path)
-                artist  = (f.get("artist")  or f.get("ARTIST")  or [""])[0]
-                title   = (f.get("title")   or f.get("TITLE")   or [""])[0]
-                album   = (f.get("album")   or f.get("ALBUM")   or [""])[0]
-            except Exception:
-                artist = title = album = ""
+            # Derive destination paths before copy via mutagen easy interface
+            # (works for FLAC, MP3, M4A — same key names across formats).
+            artist, title, album, _ = _read_audio_tags(abs_path)
 
             dest_full = compute_dest_full_path(lib_root, partition, artist, album, title, ext)
             rel_path  = compute_dest_rel_path(artist, album, title, ext)
@@ -3684,7 +3890,7 @@ class ScanTab(tk.Frame, AudioMenuMixin):
             except Exception:
                 lib_path = ""
 
-        if file_type == "FLAC":
+        if file_type and file_type.upper() in AUDIO_EXTENSIONS:
             self._detail_panel.show(full_path, lib_path)
         else:
             self._detail_panel.show("", lib_path)

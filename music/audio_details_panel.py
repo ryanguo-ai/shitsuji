@@ -5,9 +5,11 @@ Double-click any tag row to edit the tag name or value; Save Tags writes to disk
 
 import ctypes
 import io
+import os
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+import mutagen
 from mutagen.flac import FLAC
 from PIL import Image, ImageTk
 
@@ -657,6 +659,15 @@ class AudioDetailsPanel(tk.Frame):
     def _save_tags(self):
         if not self._current_path or not self._dirty:
             return
+        ext = os.path.splitext(self._current_path)[1].lower()
+        if ext != ".flac":
+            messagebox.showinfo(
+                "Save Tags",
+                "Tag editing in this panel is currently only supported for FLAC files.\n\n"
+                "Use the Scan tab's right-click menu (e.g. 'Mark as Collectible') to "
+                "modify MP3/M4A tags.",
+            )
+            return
         try:
             flac = FLAC(self._current_path)
             flac.tags.clear()
@@ -686,14 +697,28 @@ class AudioDetailsPanel(tk.Frame):
     # ------------------------------------------------------------------ #
 
     def show_flac(self, path: str):
-        """Populate the panel with cover art and tags from a FLAC file."""
+        """Populate the panel with cover art and tags from an audio file.
+
+        Supports FLAC, MP3, and M4A. Editing/Save Tags currently only writes
+        back FLAC files (lossy formats are shown read-only).
+        """
         self.clear()
         self._current_path = path
-        try:
-            flac = FLAC(path)
-        except Exception:
+        ext = os.path.splitext(path)[1].lower()
+
+        if ext == ".flac":
+            try:
+                flac = FLAC(path)
+            except Exception:
+                return
+            self._populate_flac(flac)
             return
 
+        if ext in (".mp3", ".m4a", ".m4b", ".mp4"):
+            self._populate_generic(path)
+            return
+
+    def _populate_flac(self, flac: FLAC) -> None:
         # Cover art
         pictures = flac.pictures
         cover_pic = next(
@@ -745,6 +770,54 @@ class AudioDetailsPanel(tk.Frame):
         for key, values in sorted(tags.items()):
             display_val = " / ".join(values) if isinstance(values, list) else values
             self._tag_tree.insert("", "end", values=(key.upper(), display_val))
+
+    def _populate_generic(self, path: str) -> None:
+        """Populate cover art + tags from any mutagen-supported audio file
+        (used for MP3 and M4A; FLAC takes the richer _populate_flac path)."""
+        from music.compare_tracks_panel import _extract_first_cover, _count_pictures
+
+        cover_bytes = _extract_first_cover(path)
+        if cover_bytes:
+            try:
+                img = Image.open(io.BytesIO(cover_bytes))
+                img.thumbnail((240, 240), Image.LANCZOS)
+                self._cover_photo = ImageTk.PhotoImage(img)
+                self._cover_label.configure(image=self._cover_photo, text="")
+                self._cover_image_data = cover_bytes
+            except Exception:
+                self._cover_label.configure(image="", text="(cover unreadable)")
+                self._cover_image_data = None
+        else:
+            self._cover_label.configure(image="", text="No cover art")
+            self._cover_image_data = None
+
+        total = _count_pictures(path)
+        self._img_count_var.set(f"{total} image{'s' if total != 1 else ''}")
+        if cover_bytes:
+            try:
+                orig = Image.open(io.BytesIO(cover_bytes))
+                w, h = orig.size
+                sz = _fmt_size(len(cover_bytes))
+                self._img_dims_var.set(f"{w} × {h} px  ·  {sz}")
+            except Exception:
+                self._img_dims_var.set("")
+        else:
+            self._img_dims_var.set("")
+
+        try:
+            audio = mutagen.File(path, easy=True)
+        except Exception:
+            audio = None
+        tags = (audio.tags if audio is not None else None) or {}
+        rows = []
+        for key, value in tags.items():
+            if isinstance(value, (list, tuple)):
+                display_val = " / ".join(str(v) for v in value)
+            else:
+                display_val = str(value)
+            rows.append((key.upper(), display_val))
+        for key, val in sorted(rows):
+            self._tag_tree.insert("", "end", values=(key, val))
 
     def clear(self):
         """Reset the panel to its empty state."""

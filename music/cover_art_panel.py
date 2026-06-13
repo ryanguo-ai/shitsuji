@@ -1,4 +1,4 @@
-"""Cover art finder and FLAC embedder panel."""
+"""Cover art finder and audio embedder panel (FLAC / MP3 / M4A)."""
 
 import io
 import os
@@ -7,19 +7,107 @@ import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+import mutagen
 from mutagen.flac import FLAC, Picture
+from mutagen.id3 import ID3, APIC, ID3NoHeaderError
+from mutagen.mp4 import MP4, MP4Cover
 from PIL import Image, ImageTk
 
 from cover_art.musicbrainz_retriever import MusicBrainzCoverRetriever
 from common.logger import get_logger
 
 
-class CoverArtPanel(tk.Toplevel):
-    """Search cover art from remote sources and embed it into FLAC files."""
+_FLAC_EXT = ".flac"
+_MP3_EXT = ".mp3"
+_MP4_EXTS = (".m4a", ".m4b", ".mp4")
 
-    def __init__(self, parent: tk.Widget, flac_paths: list[str], settings: dict):
+# Public set of extensions for which embed_front_cover() works.
+SUPPORTED_EMBED_EXTS = {_FLAC_EXT, _MP3_EXT, *_MP4_EXTS}
+
+
+def embed_front_cover(
+    path: str,
+    image_bytes: bytes,
+    mime: str,
+    width: int | None = None,
+    height: int | None = None,
+    depth: int | None = None,
+) -> None:
+    """Embed *image_bytes* as the front-cover artwork of *path*.
+
+    Supported formats: FLAC, MP3 (ID3 APIC), MP4/M4A (covr atom).
+    Raises ValueError for unsupported file types and propagates any
+    mutagen / PIL exception encountered during the write.
+    """
+    ext = os.path.splitext(path)[1].lower()
+
+    if width is None or height is None or depth is None:
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            if width is None:
+                width = image.width
+            if height is None:
+                height = image.height
+            if depth is None:
+                depth = max(len(image.getbands()), 1) * 8
+
+    if ext == _FLAC_EXT:
+        flac = FLAC(path)
+        other_pictures = [existing for existing in flac.pictures if existing.type != 3]
+        flac.clear_pictures()
+        for existing in other_pictures:
+            flac.add_picture(existing)
+        picture = Picture()
+        picture.type = 3
+        picture.mime = mime
+        picture.desc = "Front Cover"
+        picture.data = image_bytes
+        picture.width = width
+        picture.height = height
+        picture.depth = depth
+        flac.add_picture(picture)
+        flac.save()
+        return
+
+    if ext == _MP3_EXT:
+        try:
+            tags = ID3(path)
+        except ID3NoHeaderError:
+            tags = ID3()
+        for key in [k for k, v in list(tags.items())
+                    if k.startswith("APIC") and getattr(v, "type", None) == 3]:
+            del tags[key]
+        tags.add(APIC(
+            encoding=3,
+            mime=mime,
+            type=3,
+            desc="Front Cover",
+            data=image_bytes,
+        ))
+        tags.save(path, v2_version=3)
+        return
+
+    if ext in _MP4_EXTS:
+        mp4 = MP4(path)
+        if mp4.tags is None:
+            mp4.add_tags()
+        fmt = MP4Cover.FORMAT_PNG if mime.lower() == "image/png" else MP4Cover.FORMAT_JPEG
+        mp4.tags["covr"] = [MP4Cover(image_bytes, imageformat=fmt)]
+        mp4.save()
+        return
+
+    raise ValueError(f"Unsupported file type: {ext}")
+
+
+class CoverArtPanel(tk.Toplevel):
+    """Search cover art from remote sources and embed it into audio files.
+
+    Supports FLAC (`Picture` block), MP3 (ID3 `APIC` frame), and
+    MP4/M4A (`covr` atom).
+    """
+
+    def __init__(self, parent: tk.Widget, audio_paths: list[str], settings: dict):
         super().__init__(parent)
-        self._flac_paths = list(flac_paths)
+        self._audio_paths = list(audio_paths)
         self._settings = settings
         self._log = get_logger("cover_art")
         self._cache_dir = pathlib.Path.home() / ".shitsuji" / "cover_art_cache"
@@ -29,7 +117,7 @@ class CoverArtPanel(tk.Toplevel):
         self._selected_index: int | None = None
         self._search_thread: threading.Thread | None = None
 
-        first_name = os.path.basename(self._flac_paths[0]) if self._flac_paths else "Cover Art"
+        first_name = os.path.basename(self._audio_paths[0]) if self._audio_paths else "Cover Art"
         self.title(f"Cover Art Finder — {first_name}")
         self.configure(bg="#f5f5f5")
         self.geometry("780x600")
@@ -111,7 +199,7 @@ class CoverArtPanel(tk.Toplevel):
         footer.pack(fill=tk.X)
         self.embed_button = ttk.Button(
             footer,
-            text=f"Embed into {len(self._flac_paths)} file(s)",
+            text=f"Embed into {len(self._audio_paths)} file(s)",
             command=self._embed_selected,
             state=tk.DISABLED,
         )
@@ -119,16 +207,28 @@ class CoverArtPanel(tk.Toplevel):
         ttk.Button(footer, text="Clear Results", command=self._clear_results).pack(side=tk.RIGHT)
 
     def _prefill_tags(self) -> None:
-        if not self._flac_paths:
+        if not self._audio_paths:
             return
+        path = self._audio_paths[0]
         try:
-            flac = FLAC(self._flac_paths[0])
-            tags = flac.tags or {}
-            self.artist_var.set(tags.get("artist", [""])[0])
-            self.album_var.set(tags.get("album", [""])[0])
-            self.title_var.set(tags.get("title", [""])[0])
+            audio = mutagen.File(path, easy=True)
+            if audio is None or audio.tags is None:
+                return
+            tags = audio.tags
+
+            def first(key: str) -> str:
+                value = tags.get(key)
+                if not value:
+                    return ""
+                if isinstance(value, (list, tuple)):
+                    return str(value[0]) if value else ""
+                return str(value)
+
+            self.artist_var.set(first("artist"))
+            self.album_var.set(first("album"))
+            self.title_var.set(first("title"))
         except Exception:
-            self._log.exception("Failed to prefill tags from %s", self._flac_paths[0])
+            self._log.exception("Failed to prefill tags from %s", path)
 
     def _center_on_parent(self, parent: tk.Widget) -> None:
         self.update_idletasks()
@@ -298,24 +398,9 @@ class CoverArtPanel(tk.Toplevel):
 
         errors: list[str] = []
         embedded = 0
-        for path in self._flac_paths:
+        for path in self._audio_paths:
             try:
-                flac = FLAC(path)
-                other_pictures = [existing for existing in flac.pictures if existing.type != 3]
-                flac.clear_pictures()
-                for existing in other_pictures:
-                    flac.add_picture(existing)
-
-                picture = Picture()
-                picture.type = 3
-                picture.mime = mime
-                picture.desc = "Front Cover"
-                picture.data = image_bytes
-                picture.width = width
-                picture.height = height
-                picture.depth = depth
-                flac.add_picture(picture)
-                flac.save()
+                embed_front_cover(path, image_bytes, mime, width, height, depth)
                 embedded += 1
             except Exception as exc:
                 self._log.error(f"Failed to embed cover art into {path}: {exc}", exc_info=True)

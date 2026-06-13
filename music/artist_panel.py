@@ -47,17 +47,30 @@ class _MBSearchDialog(tk.Toplevel):
 
     Accessible via ``.result`` after the dialog is destroyed:
     ``None`` if cancelled, otherwise a parsed-artist dict.
+
+    When ``auto_import`` is True the selected artist is also written to the
+    local DB (via :func:`import_mb_artist`) and ``self.imported_artist_id``
+    is populated with the new ``artist_info.id``. This lets callers use the
+    dialog as a self-contained prompt without having to reach back into the
+    Artist Info tab.
     """
 
-    def __init__(self, parent: tk.Widget, initial_query: str = "") -> None:
+    def __init__(
+        self,
+        parent: tk.Widget,
+        initial_query: str = "",
+        auto_import: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.title("Search MusicBrainz")
         self.resizable(True, True)
-        self.minsize(640, 380)
+        self.minsize(720, 460)
         self.grab_set()
         self.configure(bg="#f5f5f5")
 
         self.result: dict | None = None
+        self.imported_artist_id: int | None = None
+        self._auto_import = auto_import
         self._raw_results: list[dict] = []
 
         self._build(initial_query)
@@ -98,14 +111,21 @@ class _MBSearchDialog(tk.Toplevel):
             font=("Segoe UI", 9, "italic"), fg="#7f8c8d", bg="#f5f5f5",
         ).pack(side=tk.LEFT, padx=(12, 0))
 
-        # ── Results tree ───────────────────────────────────────────────── #
-        tree_frame = tk.Frame(self, bg="#f5f5f5", padx=12)
-        tree_frame.pack(fill=tk.BOTH, expand=True)
+        # ── Results / details split ────────────────────────────────────── #
+        body = tk.PanedWindow(
+            self, orient=tk.VERTICAL, bg="#d0d3d4",
+            sashrelief=tk.FLAT, sashwidth=5,
+        )
+        body.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 6))
+
+        # Results tree
+        tree_frame = tk.Frame(body, bg="#f5f5f5")
+        body.add(tree_frame, stretch="always", minsize=160)
 
         cols = ("score", "name", "sort_name", "country", "mb_id")
         self._tree = ttk.Treeview(
             tree_frame, columns=cols, show="headings",
-            selectmode="browse", height=12,
+            selectmode="browse", height=10,
         )
         self._tree.heading("score",     text="Score",     anchor=tk.E)
         self._tree.heading("name",      text="Name",      anchor=tk.W)
@@ -124,17 +144,93 @@ class _MBSearchDialog(tk.Toplevel):
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self._tree.pack(fill=tk.BOTH, expand=True)
 
-        self._tree.bind("<Double-1>", lambda _: self._on_ok())
+        self._tree.bind("<Double-1>",          lambda _: self._on_ok())
+        self._tree.bind("<<TreeviewSelect>>",  lambda _: self._on_row_select())
         attach_keyboard_range_selection(self._tree)
+
+        # Details / aliases pane
+        details = tk.Frame(body, bg="#f5f5f5")
+        body.add(details, stretch="always", minsize=120)
+
+        tk.Label(
+            details, text="Selected artist details",
+            font=("Segoe UI", 9, "bold"), bg="#d6eaf8", fg="#1a5276",
+            anchor="w", padx=8, pady=3,
+        ).pack(fill=tk.X)
+
+        info_frame = tk.Frame(details, bg="#f5f5f5", padx=8, pady=4)
+        info_frame.pack(fill=tk.X)
+        self._detail_vars = {
+            "name":      tk.StringVar(value=""),
+            "sort_name": tk.StringVar(value=""),
+            "country":   tk.StringVar(value=""),
+            "mb_id":     tk.StringVar(value=""),
+        }
+        for i, (key, lbl) in enumerate((
+            ("name", "Name"), ("sort_name", "Sort name"),
+            ("country", "Country"), ("mb_id", "MB ID"),
+        )):
+            tk.Label(info_frame, text=f"{lbl}:", font=("Segoe UI", 9),
+                     bg="#f5f5f5", fg="#34495e").grid(row=i, column=0, sticky="w")
+            tk.Label(info_frame, textvariable=self._detail_vars[key],
+                     font=("Segoe UI", 9, "bold"), bg="#f5f5f5",
+                     fg="#1a5276", anchor="w").grid(row=i, column=1,
+                                                     sticky="w", padx=(8, 0))
+        info_frame.columnconfigure(1, weight=1)
+
+        alias_frame = tk.Frame(details, bg="#f5f5f5", padx=8, pady=4)
+        alias_frame.pack(fill=tk.BOTH, expand=True)
+        tk.Label(alias_frame, text="Aliases", font=("Segoe UI", 9, "bold"),
+                 bg="#f5f5f5", fg="#34495e").pack(anchor="w")
+
+        ali_cols = ("alias", "locale", "type")
+        self._alias_tree = ttk.Treeview(
+            alias_frame, columns=ali_cols, show="headings",
+            selectmode="none", height=5,
+        )
+        for cid, lbl, w in (("alias", "Alias", 220),
+                            ("locale", "Locale", 70),
+                            ("type", "Type", 100)):
+            self._alias_tree.heading(cid, text=lbl, anchor=tk.W)
+            self._alias_tree.column(cid, width=w, anchor=tk.W,
+                                    stretch=(cid == "alias"))
+        avsb = ttk.Scrollbar(alias_frame, orient=tk.VERTICAL,
+                             command=self._alias_tree.yview)
+        self._alias_tree.configure(yscrollcommand=avsb.set)
+        avsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._alias_tree.pack(fill=tk.BOTH, expand=True)
 
         # ── Buttons ────────────────────────────────────────────────────── #
         brow = tk.Frame(self, bg="#f5f5f5", padx=12, pady=10)
         brow.pack(fill=tk.X)
 
-        ttk.Button(brow, text="Import Selected", command=self._on_ok).pack(side=tk.LEFT)
+        ok_label = "Import Selected" if self._auto_import else "Use Selected"
+        ttk.Button(brow, text=ok_label, command=self._on_ok).pack(side=tk.LEFT)
         ttk.Button(brow, text="Cancel", command=self.destroy).pack(side=tk.LEFT, padx=(8, 0))
 
     # ------------------------------------------------------------------ #
+
+    def _on_row_select(self) -> None:
+        sel = self._tree.selection()
+        for v in self._detail_vars.values():
+            v.set("")
+        self._alias_tree.delete(*self._alias_tree.get_children())
+        if not sel:
+            return
+        idx = self._tree.index(sel[0])
+        if idx >= len(self._raw_results):
+            return
+        a = self._raw_results[idx]
+        self._detail_vars["name"].set(a.get("name", ""))
+        self._detail_vars["sort_name"].set(a.get("sort_name", ""))
+        self._detail_vars["country"].set(a.get("country", ""))
+        self._detail_vars["mb_id"].set(a.get("musicbrainz_id", ""))
+        for al in a.get("aliases", []) or []:
+            self._alias_tree.insert("", "end", values=(
+                al.get("alias", ""),
+                al.get("locale", "") or "",
+                al.get("alias_type", "") or "",
+            ))
 
     def _do_search(self) -> None:
         query = self._query_var.get().strip()
@@ -142,6 +238,9 @@ class _MBSearchDialog(tk.Toplevel):
             return
         self._status_var.set("Searching…")
         self._tree.delete(*self._tree.get_children())
+        for v in self._detail_vars.values():
+            v.set("")
+        self._alias_tree.delete(*self._alias_tree.get_children())
         self.update_idletasks()
 
         def _worker():
@@ -171,6 +270,11 @@ class _MBSearchDialog(tk.Toplevel):
             )
         count = len(artists)
         self._status_var.set(f"{count} result{'s' if count != 1 else ''} found.")
+        if count:
+            first = self._tree.get_children()[0]
+            self._tree.selection_set(first)
+            self._tree.focus(first)
+            self._on_row_select()
 
     def _on_ok(self) -> None:
         sel = self._tree.selection()
@@ -179,7 +283,58 @@ class _MBSearchDialog(tk.Toplevel):
             return
         idx = self._tree.index(sel[0])
         self.result = self._raw_results[idx]
+        if self._auto_import:
+            try:
+                self.imported_artist_id = import_mb_artist(self.result)
+            except Exception as exc:
+                _log.error(f"Auto-import failed for {self.result.get('name')}: {exc}")
+                messagebox.showerror(
+                    "Import failed",
+                    f"Could not save artist to the library:\n{exc}",
+                    parent=self,
+                )
+                return
         self.destroy()
+
+
+# ===================================================================== #
+# Module-level helpers — reusable from other panels                       #
+# ===================================================================== #
+
+def import_mb_artist(parsed: dict) -> int:
+    """Persist a MusicBrainz-parsed artist (and its aliases) to the local DB.
+
+    Returns the ``artist_info.id`` of the new (or existing) row.
+    """
+    artist_id = upsert_artist(
+        name=parsed["name"],
+        sort_name=parsed["sort_name"],
+        country=parsed["country"],
+        musicbrainz_id=parsed["musicbrainz_id"],
+    )
+    for a in parsed.get("aliases", []) or []:
+        add_alias(artist_id, a["alias"], a.get("locale", ""), a.get("alias_type", ""))
+    _log.info(
+        f"Imported artist '{parsed['name']}' (mbid={parsed['musicbrainz_id']}) "
+        f"with {len(parsed.get('aliases') or [])} alias(es)."
+    )
+    return artist_id
+
+
+def prompt_mb_search_and_import(parent: tk.Widget, query: str = "") -> dict | None:
+    """Open the MusicBrainz search dialog and, if the user picks an artist,
+    save it to the local DB.
+
+    Returns the parsed-artist dict (with an extra ``artist_id`` key) on
+    success, or ``None`` if the user cancelled.
+    """
+    dlg = _MBSearchDialog(parent, initial_query=query, auto_import=True)
+    parent.wait_window(dlg)
+    if dlg.result is None or dlg.imported_artist_id is None:
+        return None
+    out = dict(dlg.result)
+    out["artist_id"] = dlg.imported_artist_id
+    return out
 
 
 # ===================================================================== #
@@ -656,18 +811,7 @@ class ArtistTab(tk.Frame):
 
     def _import_mb_artist(self, parsed: dict) -> None:
         """Save an artist parsed from MusicBrainz into the local DB."""
-        artist_id = upsert_artist(
-            name=parsed["name"],
-            sort_name=parsed["sort_name"],
-            country=parsed["country"],
-            musicbrainz_id=parsed["musicbrainz_id"],
-        )
-        for a in parsed["aliases"]:
-            add_alias(artist_id, a["alias"], a.get("locale", ""), a.get("alias_type", ""))
-        _log.info(
-            f"Imported artist '{parsed['name']}' (mbid={parsed['musicbrainz_id']}) "
-            f"with {len(parsed['aliases'])} alias(es)."
-        )
+        artist_id = import_mb_artist(parsed)
         self._refresh_artist_list()
         self._status_var.set(f"Imported: {parsed['name']}")
         # Select the newly imported row

@@ -40,15 +40,30 @@ def copy_track_to_lib(
     shutil.copy2(src_path, dest_path)
     log.info(f"Copied: {src_path!r} → {dest_path!r}")
 
-    # Read FLAC tags from the source (before or after copy — same bytes)
+    # Read tags from the source via mutagen's easy interface so FLAC, MP3,
+    # and M4A all work uniformly. (Reading from src or dest is equivalent —
+    # bytes are identical after shutil.copy2.)
     artist = title = album = bitrate = ""
     try:
-        from mutagen.flac import FLAC
-        f = FLAC(src_path)
-        artist  = (f.get("artist")  or f.get("ARTIST")  or [""])[0]
-        title   = (f.get("title")   or f.get("TITLE")   or [""])[0]
-        album   = (f.get("album")   or f.get("ALBUM")   or [""])[0]
-        bitrate = f"{round(f.info.bitrate / 1000)} kbps" if f.info else ""
+        import mutagen
+        audio = mutagen.File(src_path, easy=True)
+        if audio is not None:
+            tags = audio.tags or {}
+
+            def _first(key: str) -> str:
+                v = tags.get(key) or tags.get(key.upper())
+                if not v:
+                    return ""
+                if isinstance(v, (list, tuple)):
+                    return str(v[0]) if v else ""
+                return str(v)
+
+            artist = _first("artist")
+            title  = _first("title")
+            album  = _first("album")
+            info = getattr(audio, "info", None)
+            if info is not None and getattr(info, "bitrate", 0):
+                bitrate = f"{round(info.bitrate / 1000)} kbps"
     except Exception as exc:
         log.warning(f"Tag read failed for {src_path!r}: {exc}")
 
